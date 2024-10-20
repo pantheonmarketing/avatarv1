@@ -1,0 +1,27 @@
+name = "patient-river-2830"
+main = "src/index.ts"
+compatibility_date = "2023-10-15"
+
+workers_dev = true
+account_id = "8ddbcdceb02d06b899d23208935156c6"
+
+[build]
+command = "npm run build"
+
+[[rules]]
+type = "ESModule"
+globs = ["**/*.js"]
+
+[ai]
+binding = "AI"
+
+[vars]
+ENVIRONMENT = "production"
+
+[env.staging]
+name = "patient-river-2830-staging"
+vars = { ENVIRONMENT = "staging" }
+
+[env.development]
+name = "patient-river-2830-dev"
+vars = { ENVIRONMENT = "development" }
