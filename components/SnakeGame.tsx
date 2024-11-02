@@ -34,6 +34,13 @@ export function SnakeGame({ onClose }: SnakeGameProps) {
   const gameLoopRef = useRef<number | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
+  const endGame = useCallback(() => {
+    setGameOver(true)
+    setGameStarted(false)
+    if (score > highScore) setHighScore(score)
+    if (timeSurvived > longestTime) setLongestTime(timeSurvived)
+  }, [score, highScore, timeSurvived, longestTime])
+
   const moveSnake = useCallback(() => {
     setSnake(prevSnake => {
       const newSnake = [...prevSnake]
@@ -66,7 +73,7 @@ export function SnakeGame({ onClose }: SnakeGameProps) {
 
       return newSnake
     })
-  }, [direction, food])
+  }, [direction, food, endGame]) // Add endGame to the dependency array
 
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
@@ -133,7 +140,7 @@ export function SnakeGame({ onClose }: SnakeGameProps) {
         
         // Draw apple
         const appleImg = new Image()
-        appleImg.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2U3NDA0MCIgZD0iTTIwLjcxIDcuMDRjLjM5LS4zOS4zOS0xLjAyIDAtMS40MWwtMi4zNC0yLjM0Yy0uMzktLjM5LTEuMDItLjM5LTEuNDEgMGwtMS44NCAxLjgzYy0uOTItLjU2LTIuMDMtLjg4LTMuMjEtLjg4LTMuMzEgMC02IDIuNjktNiA2IDAgMS42NS42NyAzLjE1IDEuNzYgNC4yNEw0LjEzIDE4Yy0uMzkuMzktLjM5IDEuMDIgMCAxLjQxbDIuMzQgMi4zNGMuMzkuMzkgMS4wMi4zOSAxLjQxIDBsMS44My0xLjgzYy45Mi41NiAyLjAzLjg4IDMuMjEuODggMy4zMSAwIDYtMi42OSA2LTYgMC0xLjY1LS42Ny0zLjE1LTEuNzYtNC4yNGwzLjU1LTMuNTV6TTE1IDE1YzAgMS42NS0xLjM1IDMtMyAzcy0zLTEuMzUtMy0zIDEuMzUtMyAzLTMgMyAxLjM1IDMgM3oiLz48L3N2Zz4='
+        appleImg.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2U3NDA0MCIgZD0iTTIwLjcxIDcuMDRjLjM5LS4zOS4zOS0xLjAyIDAtMS40MWwtMi4zNC0yLjM0Yy0uMzktLjM5LTEuMDItLjM5LTEuNDEgMGwtMS44NCAxLjgzYy0uOTItLjU2LTIuMDMtLjg4LTMuMjEtLjg4LTMuMzEgMC02IDIuNjktNiA2IDAgMS42NS42NyAzLjE1IDEuNzYgNC4yNEw0LjEzIDE4Yy0uMzkuMzkgMS4wMi4zOSAxLjQxIDBsMS44My0xLjgzYy45Mi41NiAyLjAzLjg4IDMuMjEuODggMy4zMSAwIDYtMi42OSA2LTYgMC0xLjY1LS42Ny0zLjE1LTEuNzYtNC4yNGwzLjU1LTMuNTV6TTE1IDE1YzAgMS42NS0xLjM1IDMtMyAzcy0zLTEuMzUtMy0zIDEuMzUtMyAzLTMgMyAxLjM1IDMgM3oiLz48L3N2Zz4='
         appleImg.onload = () => {
           ctx.drawImage(appleImg, food.x * CELL_SIZE, food.y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
         }
@@ -149,13 +156,6 @@ export function SnakeGame({ onClose }: SnakeGameProps) {
     setGameStarted(true)
     setScore(0)
     setTimeSurvived(0)
-  }
-
-  const endGame = () => {
-    setGameOver(true)
-    setGameStarted(false)
-    if (score > highScore) setHighScore(score)
-    if (timeSurvived > longestTime) setLongestTime(timeSurvived)
   }
 
   return (

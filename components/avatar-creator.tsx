@@ -1,44 +1,50 @@
 "use client"
 
-import React, { useState, useRef, useEffect, useCallback, useReducer } from "react"
+import React, { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "./ui/card"
 import { Input } from "./ui/input"
 import { Textarea } from "./ui/textarea"
 import { Label } from "./ui/label"
-import { RadioGroup, RadioGroupItem } from "./ui/radio-group"
-import { Loader2, ChevronDown, ChevronUp, Download, Upload, Edit, Save, X, Plus, Trash, FolderOpen, MoonIcon, SunIcon } from "lucide-react"
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/accordion"
-import { AvatarData } from "../types/avatar"
+import { Loader2, ChevronDown, Download, MoonIcon, SunIcon, Plus, Save, Trash } from "lucide-react"
+import { AvatarData, AvatarDetails } from "../types/avatar"
 import toast from 'react-hot-toast'
-import { SnakeGame } from './SnakeGame'
 import jsPDF from 'jspdf'
 import 'jspdf-autotable'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import Image from 'next/image'
-import { Button } from "./ui/button"
-import { motion, AnimatePresence } from "framer-motion"
-import { ThemeToggle } from "./theme-toggle"
-import { useLocalStorage } from '@/hooks/useLocalStorage'
-import { get, set, cloneDeep } from 'lodash'
-import debounce from 'lodash/debounce'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
 import { useTheme } from "next-themes"
 import dynamic from 'next/dynamic'
 import 'react-quill/dist/quill.snow.css'
 import * as AvatarTypes from '../types/avatar';
 import { truncate } from 'lodash';
-// @ts-ignore
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useLocalStorage } from "@/hooks/useLocalStorage"
+import { Avatar, AvatarImage, AvatarFallback } from "./ui/avatar"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@radix-ui/react-tabs"
+import { motion } from "framer-motion"
+import { Button } from "./ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import html2canvas from 'html2canvas';
+import Image from 'next/image';
+import { saveAvatar, getUserCredits, deductCredit, updateAvatar, deleteAvatar } from '@/services/supabaseService';
+import { useUser } from '@clerk/nextjs';
+import { useCredits } from '@/contexts/CreditsContext';
+import { supabase } from '@/services/supabaseService';
+import debounce from 'lodash/debounce';
+import { debug } from '@/utils/debug';
+import { uploadImageToSupabase } from '@/utils/imageUpload';
 
 const ReactQuill = dynamic(() => import('react-quill'), { ssr: false });
 
@@ -53,75 +59,175 @@ const sectionToPropertyMap: Record<string, keyof AvatarData> = {
   "humiliation": "humiliation",
   "frustrations": "frustrations",
   "complaints": "complaints",
-  "worries": "worries",
   "cost-of-not-buying": "costOfNotBuying",
   "biggest-want": "biggestWant",
 };
 
-// Define action types
-type Action = 
-  | { type: 'ADD_PROBLEM'; path: string }
-  | { type: 'ADD_ITEM'; path: string }
-  | { type: 'EDIT_FIELD'; path: string; value: string }
-  | { type: 'REMOVE_ITEM'; path: string; index: number }
-  | { type: 'SET_AVATAR'; avatar: AvatarData | null };
+// Define the capitalizeFirstLetter function
+const capitalizeFirstLetter = (string: string): string => {
+  return string.charAt(0).toUpperCase() + string.slice(1);
+};
 
-// Reducer function
-function avatarReducer(state: AvatarData | null, action: Action): AvatarData | null {
-  if (!state) return state;
-  
-  let updatedState = { ...state };
+// Move formatContent function before formatSectionData
+const formatContent = (content: any): string => {
+  if (!content) return '';
 
-  switch (action.type) {
-    case 'ADD_PROBLEM': {
-      const currentValue = get(updatedState, action.path);
-      let newValue;
-      if (Array.isArray(currentValue)) {
-        newValue = [...currentValue, ''];
-      } else if (typeof currentValue === 'string') {
-        newValue = [currentValue, ''];
-      } else {
-        newValue = [''];
-      }
-      set(updatedState, action.path, newValue);
-      break;
+  if (typeof content === 'string') {
+    return content
+      .replace(/<[^>]*>/g, '') // Remove HTML tags
+      .replace(/•/g, '\n• ') // Format bullet points
+      .replace(/\n\s*\n/g, '\n') // Remove extra line breaks
+      .trim();
+  }
+  if (typeof content === 'object' && content !== null) {
+    if (content.name || content.career || content.age || content.location) {
+      // Handle personal details object
+      return Object.entries(content)
+        .filter(([_, value]) => value) // Only include non-empty values
+        .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+        .join('\n');
     }
-    case 'ADD_ITEM': {
-      const list = get(updatedState, action.path);
-      if (Array.isArray(list)) {
-        set(updatedState, action.path, [...list, { main: '', subPoints: [] }]);
-      } else {
-        set(updatedState, action.path, [{ main: '', subPoints: [] }]);
+    return Object.entries(content)
+      .filter(([_, value]) => value)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\n');
+  }
+  return '';
+};
+
+// Update formatSectionData to use the formatContent function
+const formatSectionData = (data: any): string => {
+  if (!data) return '';
+
+  // Handle personal details object
+  if (typeof data === 'string') {
+    try {
+      // Try to parse if it's a JSON string
+      const parsed = JSON.parse(data);
+      if (typeof parsed === 'object' && parsed !== null) {
+        // If it's personal details
+        if (parsed.name || parsed.age || parsed.gender || parsed.location || parsed.career) {
+          return Object.entries(parsed)
+            .filter(([_, value]) => value) // Filter out empty values
+            .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+            .join('\n');
+        }
+        // If it's a section with headline and points
+        if (parsed.headline && Array.isArray(parsed.points)) {
+          return `<h3>${parsed.headline}</h3>\n${parsed.points.map((point: string) => `• ${point}`).join('\n')}`;
+        }
       }
-      break;
+      return formatContent(parsed);
+    } catch {
+      // If not valid JSON, treat as regular string
+      return data
+        .replace(/<[^>]*>/g, '') // Remove HTML tags
+        .split('\n')
+        .filter(line => line.trim())
+        .map(line => line.startsWith('•') ? line : `• ${line}`)
+        .join('\n');
     }
-    case 'EDIT_FIELD': {
-      const currentValue = get(updatedState, action.path);
-      if (Array.isArray(currentValue)) {
-        set(updatedState, action.path, [...currentValue, action.value]);
-      } else if (typeof currentValue === 'string' && action.value.startsWith('[') && action.value.endsWith(']')) {
-        set(updatedState, action.path, action.value);
-      } else {
-        set(updatedState, action.path, action.value);
-      }
-      break;
-    }
-    case 'REMOVE_ITEM': {
-      const list = get(updatedState, action.path);
-      if (Array.isArray(list)) {
-        list.splice(action.index, 1);
-        set(updatedState, action.path, list);
-      }
-      break;
-    }
-    case 'SET_AVATAR':
-      return action.avatar;
-    default:
-      return state;
   }
 
-  return updatedState;
-}
+  // Handle object format directly
+  if (typeof data === 'object' && data !== null) {
+    // If it's personal details
+    if (data.name || data.age || data.gender || data.location || data.career) {
+      return Object.entries(data)
+        .filter(([_, value]) => value)
+        .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+        .join('\n');
+    }
+    // If it's a section with headline and points
+    if (data.headline && Array.isArray(data.points)) {
+      return `<h3>${data.headline}</h3>\n${data.points.map((point: string) => `• ${point}`).join('\n')}`;
+    }
+  }
+
+  // Handle array format
+  if (Array.isArray(data)) {
+    return data.map(item => `• ${item}`).join('\n');
+  }
+
+  return String(data);
+};
+
+// Add this new component
+const AnimatedAvatarPreview = () => {
+  return (
+    <div className="w-64 h-64 relative">
+      <motion.div
+        className="absolute inset-0 bg-gray-300 dark:bg-gray-700 rounded-full"
+        animate={{
+          scale: [1, 1.1, 1],
+          opacity: [0.5, 1, 0.5],
+        }}
+        transition={{
+          duration: 2,
+          repeat: Infinity,
+          ease: "easeInOut",
+        }}
+      />
+      <motion.div
+        className="absolute inset-0 border-4 border-purple-500 rounded-full"
+        animate={{
+          rotate: 360,
+        }}
+        transition={{
+          duration: 4,
+          repeat: Infinity,
+          ease: "linear",
+        }}
+      />
+      <motion.div
+        className="absolute inset-8 bg-gray-400 dark:bg-gray-600 rounded-full"
+        animate={{
+          scale: [1, 0.9, 1],
+        }}
+        transition={{
+          duration: 2,
+          repeat: Infinity,
+          ease: "easeInOut",
+        }}
+      />
+      <motion.div
+        className="absolute inset-16 bg-gray-500 dark:bg-gray-500 rounded-full"
+        animate={{
+          scale: [1, 1.1, 1],
+        }}
+        transition={{
+          duration: 2,
+          repeat: Infinity,
+          ease: "easeInOut",
+          delay: 0.5,
+        }}
+      />
+    </div>
+  );
+};
+
+// Add this new component inside avatar-creator.tsx
+const LoadingAnimation = () => (
+  <div className="relative w-32 h-32">
+    {/* Outer rotating ring */}
+    <div className="absolute inset-0 rounded-full bg-gradient-to-r from-purple-600 via-pink-500 to-purple-600 animate-[spin_3s_linear_infinite]" />
+    
+    {/* Inner content */}
+    <div className="absolute inset-1 rounded-full bg-white dark:bg-gray-900 flex items-center justify-center">
+      {/* Multiple spinning circles */}
+      <div className="relative w-24 h-24">
+        <div className="absolute inset-0 rounded-full border-4 border-purple-500 border-t-transparent animate-[spin_1s_linear_infinite]" />
+        <div className="absolute inset-2 rounded-full border-4 border-pink-500 border-t-transparent animate-[spin_1.5s_linear_infinite_reverse]" />
+        <div className="absolute inset-4 rounded-full border-4 border-purple-500 border-t-transparent animate-[spin_2s_linear_infinite]" />
+        
+        {/* Center pulsing dot */}
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-4 h-4 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 animate-pulse" />
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 export function AvatarCreatorComponent() {
   const [isClient, setIsClient] = useState(false);
@@ -132,28 +238,26 @@ export function AvatarCreatorComponent() {
 
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
-  const [initialData, setInitialData] = useState({
+  const [generatedAvatar, setGeneratedAvatar] = useState<AvatarData | null>(null)
+  const [savedAvatars, setSavedAvatars] = useState<AvatarData[]>([]);
+  const [currentAvatarId, setCurrentAvatarId] = useState<number | null>(null);
+  const { theme, setTheme } = useTheme();
+  const [editorContents, setEditorContents] = useState<Record<string, string>>({});
+  const [avatarImageUrl, setAvatarImageUrl] = useState<string | null>(null);
+  const [errors, setErrors] = useState({
+    targetAudience: '',
+    helpDescription: ''
+  });
+  const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
+  const [avatarName, setAvatarName] = useState('');
+  const { user } = useUser();
+  const { credits, refreshCredits } = useCredits();
+  const [generating, setGenerating] = useState(false);
+  const [formData, setFormData] = useState({
     targetAudience: "",
     helpDescription: "",
-    offerType: "lowTicket", // Default value
-  })
-  const [generatedAvatar, setGeneratedAvatar] = useState<AvatarData | null>(null)
-  const [openTabs, setOpenTabs] = useState<string[]>([])
-  const [isEditing, setIsEditing] = useState(false)
-  const [editedAvatar, dispatch] = useReducer(avatarReducer, null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [showSnakeGame, setShowSnakeGame] = useState(false)
-  const notificationIdRef = useRef<string | null>(null)
-  const [savedAvatars, setSavedAvatars] = useLocalStorage<AvatarData[]>("savedAvatars", []);
-  const [currentAvatarId, setCurrentAvatarId] = useState<number | null>(null);
-  const [selectedAvatarIndex, setSelectedAvatarIndex] = useState<number | null>(null);
-  const isAddingProblemRef = useRef(false);
-  const { theme, setTheme } = useTheme();
-  const [activeTab, setActiveTab] = useState("personal-details");
-  const [editorContents, setEditorContents] = useState<Record<string, string>>({});
-  const [generatingSection, setGeneratingSection] = useState<string | null>(null);
-  const [avatarImageUrl, setAvatarImageUrl] = useState<string | null>(null);
-  const [offerType, setOfferType] = useState<string>("lowTicket"); // Default to low ticket
+  });
+  const [showLoadingDialog, setShowLoadingDialog] = useState(false);
 
   // Define the set of sections without the "Add with AI" button
   const sectionsWithoutAddWithAI = new Set(["personal-details", "offer-details"]);
@@ -162,151 +266,190 @@ export function AvatarCreatorComponent() {
     console.log('Generated Avatar updated:', generatedAvatar);
   }, [generatedAvatar]);
 
+  // Create a debounced function for updating the avatar data
+  const debouncedUpdateAvatar = useCallback(
+    debounce((content: string, section: string) => {
+      setGeneratedAvatar(prev => {
+        if (!prev) return prev;
+        const property = sectionToPropertyMap[section];
+        return { ...prev, [property]: content };
+      });
+    }, 1000), // Wait 1 second after the last change before updating
+    []
+  );
+
+  // Update only the editor content immediately
+  const handleEditorChange = (content: string, section: string) => {
+    setEditorContents(prev => ({ ...prev, [section]: content }));
+    // Debounce the avatar update
+    debouncedUpdateAvatar(content, section);
+  };
+
+  // Clean up the debounced function on unmount
+  useEffect(() => {
+    return () => {
+      debouncedUpdateAvatar.cancel();
+    };
+  }, [debouncedUpdateAvatar]);
+
+  // Update editor contents when avatar changes
   useEffect(() => {
     if (generatedAvatar) {
       const initialContents: Record<string, string> = {};
       Object.entries(sectionToPropertyMap).forEach(([section, property]) => {
         const sectionData = generatedAvatar[property as keyof AvatarTypes.AvatarData];
-        initialContents[section] = formatSectionData(sectionData);
+        if (sectionData && !editorContents[section]) { // Only update if content doesn't exist
+          initialContents[section] = formatSectionData(sectionData);
+        }
       });
-      setEditorContents(initialContents);
+      if (Object.keys(initialContents).length > 0) {
+        setEditorContents(prev => ({ ...prev, ...initialContents }));
+      }
     }
   }, [generatedAvatar]);
 
-  const capitalizeFirstLetter = (string: string) => {
-    return string.charAt(0).toUpperCase() + string.slice(1);
-  };
-
-  const formatSectionData = (data: any): string => {
-    if (typeof data === 'string') {
-      return data;
-    } else if (Array.isArray(data)) {
-      return data.map(item => formatSectionData(item)).join('<br><br>');
-    } else if (typeof data === 'object' && data !== null) {
-      if ('main' in data && 'subPoints' in data) {
-        return `<h3 class="font-poppins"><strong>${capitalizeFirstLetter(data.main)}</strong></h3><ul>${data.subPoints.map((point: string) => `<li>${point}</li>`).join('')}</ul>`;
-      } else if ('financial' in data && 'emotional' in data && 'social' in data) {
-        // Handle the "Cost of Not Buying" structure
-        return `
-          <h3 class="font-poppins"><strong>Financial</strong></h3>
-          <p>${data.financial}</p>
-          <h3 class="font-poppins"><strong>Emotional</strong></h3>
-          <p>${data.emotional}</p>
-          <h3 class="font-poppins"><strong>Social</strong></h3>
-          <p>${data.social}</p>
-        `;
-      } else if ('financial' in data && 'emotional' in data) {
-        // Handle the "Biggest Problem" structure
-        return `
-          <div class="biggest-problem">
-            <h3 class="font-poppins"><strong>Financial</strong></h3>
-            <p><strong>Desire:</strong> ${data.financial.desire}</p>
-            <p><strong>Problem:</strong> ${Array.isArray(data.financial.problem) 
-              ? data.financial.problem.join(', ')
-              : data.financial.problem}</p>
-            
-            <h3 class="font-poppins mt-4"><strong>Emotional</strong></h3>
-            <p><strong>Desire:</strong> ${data.emotional.desire}</p>
-            <p><strong>Problem:</strong> ${Array.isArray(data.emotional.problem)
-              ? data.emotional.problem.join(', ')
-              : data.emotional.problem}</p>
-          </div>
-        `;
-      } else {
-        return Object.entries(data).map(([key, value]) => `<h3 class="font-poppins"><strong>${capitalizeFirstLetter(key)}:</strong></h3> ${value}`).join('<br>');
-      }
-    }
-    return JSON.stringify(data);
-  };
-
-  const formatArrayOfObjects = (arr: any[]): string => {
-    return arr.map(item => `
-      <h4 class="font-poppins"><strong>${capitalizeFirstLetter(item.main)}</strong></h4>
-      <ul>
-        ${item.subPoints.map((subPoint: string) => `<li>${subPoint}</li>`).join('')}
-      </ul>
-    `).join('');
-  };
-
   const handleInputChange = (field: string, value: string) => {
-    setInitialData((prev) => ({ ...prev, [field]: value }));
+    setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleOfferTypeChange = (value: string) => {
-    setInitialData(prev => ({ ...prev, offerType: value }));
+  const validateForm = () => {
+    let isValid = true;
+    const newErrors = { targetAudience: '', helpDescription: '' };
+
+    if (!formData.targetAudience.trim()) {
+      newErrors.targetAudience = 'Target audience is required';
+      isValid = false;
+    }
+
+    if (!formData.helpDescription.trim()) {
+      newErrors.helpDescription = 'Help description is required';
+      isValid = false;
+    }
+
+    setErrors(newErrors);
+    return isValid;
   };
 
-  const generateAvatar = async () => {
-    setLoading(true);
-    setShowSnakeGame(true);
-    notificationIdRef.current = toast.loading("Your avatar is being generated...", {
-      duration: Infinity,
-      position: "top-right",
-      // ... other toast options
-    });
-
+  const handleGenerate = async () => {
     try {
-      const response = await fetch('/api/generate-avatar', {
+      setLoading(true);
+      setShowLoadingDialog(true);
+      setErrors({ targetAudience: '', helpDescription: '' });
+
+      if (!validateForm()) {
+        setShowLoadingDialog(false);
+        return;
+      }
+
+      if (!user?.id) {
+        throw new Error('User not authenticated');
+      }
+
+      // Deduct credits first
+      const deductResult = await deductCredit(user.id, 1);
+      if (!deductResult) {
+        throw new Error('Failed to deduct credits');
+      }
+      console.log('Credit deducted successfully');
+
+      // Generate avatar
+      const response = await fetch('/api/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          targetAudience: initialData.targetAudience,
-          helpDescription: initialData.helpDescription,
-          offerType: initialData.offerType,
+          targetAudience: formData.targetAudience.trim(),
+          helpDescription: formData.helpDescription.trim(),
+          userId: user.id,
         }),
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to generate avatar");
+        let errorMessage = 'Failed to generate avatar';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorMessage;
+        } catch (e) {
+          errorMessage = `${errorMessage}: ${response.statusText}`;
+        }
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
+      setGeneratedAvatar(data);
       
-      // Extract name from the story if it's not in shortDescription
-      const extractNameFromStory = (story: string) => {
-        const firstWord = story.split(' ')[0];
-        return firstWord.match(/^[A-Z][a-z]+$/) ? firstWord : null;
-      };
-
-      // Extract name, profession, and niche from the AI-generated description
-      // or use fallback values if shortDescription is not available
-      const name = data.shortDescription?.name || 
-                   data.details?.name || 
-                   extractNameFromStory(data.story) || 
-                   "Unnamed";
-      const profession = data.shortDescription?.profession || data.details?.career || "Professional";
-      const niche = data.shortDescription?.niche || initialData.helpDescription || "General";
-      
-      // Update the avatar data with the extracted information
-      const updatedData = {
-        ...data,
-        details: {
-          ...data.details,
-          name,
-          profession,
-          niche
+      // Generate image for the avatar
+      const imageResponse = await fetch('/api/generate-avatar-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-        shortDescription: { name, profession, niche }
-      };
+        body: JSON.stringify({
+          avatarDetails: data.details
+        }),
+      });
 
-      setGeneratedAvatar(updatedData);
-      setCurrentAvatarId(null);
+      if (!imageResponse.ok) {
+        throw new Error('Failed to generate image');
+      }
+
+      const imageData = await imageResponse.json();
+
+      if (!imageData.imageUrl) {
+        throw new Error('No image URL received');
+      }
+
+      // Upload the DALL-E image to Supabase storage
+      const permanentImageUrl = await uploadImageToSupabase(
+        imageData.imageUrl,
+        `avatar-${Date.now()}`
+      );
+      
+      // Set the avatar image URL
+      setAvatarImageUrl(permanentImageUrl);
+      
+      // Now save the avatar with the permanent image URL
+      if (user?.id) {
+        try {
+          const avatarToSave = {
+            ...data,
+            imageUrl: permanentImageUrl,  // Use the permanent URL
+            user_email: user.emailAddresses?.[0]?.emailAddress,
+            targetAudience: formData.targetAudience,
+            helpDescription: formData.helpDescription,
+          };
+
+          await saveAvatar(user.id, avatarToSave);
+          await fetchSavedAvatars();
+        } catch (saveError) {
+          console.error('Error saving avatar:', saveError);
+          toast.error('Avatar generated but failed to save');
+        }
+      }
+
+      await refreshCredits();
+      // Set step to 2 after successful generation
       setStep(2);
       toast.success('Avatar generated successfully!');
 
-      // Automatically generate the avatar image
-      await generateAvatarImage(updatedData);
     } catch (error) {
-      console.error("Error generating avatar:", error);
-      toast.error(`Failed to generate avatar: ${error instanceof Error ? error.message : "Unknown error"}`);
+      console.error('Avatar generation error:', error);
+      toast.error(error instanceof Error ? error.message : 'An unexpected error occurred');
+      
+      // If generation failed but credits were deducted, we should refund them
+      try {
+        if (user?.id) {
+          await deductCredit(user.id, -1);
+          console.log('Credits refunded due to generation failure');
+          await refreshCredits();
+        }
+      } catch (refundError) {
+        console.error('Failed to refund credits:', refundError);
+      }
     } finally {
       setLoading(false);
-      setShowSnakeGame(false);
-      if (notificationIdRef.current) {
-        toast.dismiss(notificationIdRef.current);
-        notificationIdRef.current = null;
-      }
+      setShowLoadingDialog(false);
     }
   };
 
@@ -317,343 +460,91 @@ export function AvatarCreatorComponent() {
       return;
     }
 
-    const { gender = 'person', ageRange = 'adult', career = 'professional' } = avatarData.details;
-    console.log('Avatar Details:', { gender, ageRange, career });
+    const toastId = toast.loading('Generating avatar image...');
 
-    const prompt = `${gender} ${ageRange} ${career} portrait`.trim();
-    console.log('Generated Prompt:', prompt);
+    try {
+      setLoading(true);
 
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
-    setAvatarImageUrl(imageUrl);
-    toast.success('Avatar image generated successfully');
+      // Generate image with DALL-E
+      const response = await fetch('/api/generate-avatar-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          avatarDetails: avatarData.details
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate image');
+      }
+
+      const data = await response.json();
+      
+      // Upload the DALL-E image to Supabase storage
+      const permanentImageUrl = await uploadImageToSupabase(
+        data.imageUrl,
+        avatarData.id || `temp-${Date.now()}`
+      );
+      
+      // Save the permanent URL to state
+      setAvatarImageUrl(permanentImageUrl);
+
+      // If we have an existing avatar, update it with the new image
+      if (avatarData.id && user?.id) {
+        await updateAvatar(avatarData.id, {
+          ...avatarData,
+          imageUrl: permanentImageUrl
+        });
+        await fetchSavedAvatars(); // Refresh the avatars list
+      }
+
+      toast.success('Avatar image generated successfully', { id: toastId });
+    } catch (error) {
+      console.error('Error generating avatar image:', error);
+      toast.error('Failed to generate avatar image', { id: toastId });
+    } finally {
+      setLoading(false);
+    }
   };
-
-  const toggleAllTabs = (open: boolean) => {
-    const allTabs = [
-      "personal-details", "story", "current-wants", "pain-points", "desires",
-      "offer-results", "biggest-problem", "humiliation", "frustrations",
-      "complaints", "worries", "cost-of-not-buying", "biggest-want", "offer-details"
-    ]
-    setOpenTabs(open ? allTabs : [])
-  }
-
-  const handleDownload = () => {
-    if (!generatedAvatar) return
-    const jsonString = JSON.stringify(generatedAvatar, null, 2)
-    const blob = new Blob([jsonString], { type: "application/json" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = "avatar.json"
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-    toast.success('Avatar downloaded successfully!')
-  }
-
-  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (file) {
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        try {
-          const uploadedAvatar = JSON.parse(e.target?.result as string) as AvatarData
-          setGeneratedAvatar(uploadedAvatar)
-          setStep(2)
-          toast.success('Avatar loaded successfully!')
-        } catch (error) {
-          console.error("Error parsing JSON:", error)
-          toast.error('Invalid file format. Please upload a valid JSON file.')
-        }
-      }
-      reader.readAsText(file)
-    }
-  }
-
-  const handleAddProblem = useCallback((path: string) => {
-    dispatch({ type: 'ADD_PROBLEM', path });
-  }, []);
-
-  const handleEditChange = useCallback((path: string, value: string) => {
-    dispatch({ type: 'EDIT_FIELD', path, value });
-  }, []);
-
-  const handleRemoveItem = useCallback((path: string, index: number) => {
-    dispatch({ type: 'REMOVE_ITEM', path, index });
-  }, []);
-
-  const startEditing = () => {
-    dispatch({ type: 'SET_AVATAR', avatar: generatedAvatar });
-    setIsEditing(true)
-  }
-
-  const saveEdits = () => {
-    if (editedAvatar) {
-      const emptyFields = validateAvatar(editedAvatar)
-      if (emptyFields.length > 0) {
-        toast.error(`Please fill in the following fields: ${emptyFields.join(', ')}`)
-        return
-      }
-
-      setGeneratedAvatar(editedAvatar)
-      setIsEditing(false)
-      toast.success('Avatar updated successfully!')
-    } else {
-      toast.error('No changes to save.')
-    }
-  }
-
-  const validateAvatar = (avatar: AvatarData): string[] => {
-    const emptyFields: string[] = [];
-
-    // Check required fields
-    if (!avatar.details || Object.values(avatar.details).some(value => !value)) {
-      emptyFields.push('details');
-    }
-    if (!avatar.story) emptyFields.push('story');
-    if (!avatar.currentWants || !avatar.currentWants.main || avatar.currentWants.subPoints.length === 0) {
-      emptyFields.push('currentWants');
-    }
-    if (!avatar.biggestWant || !avatar.biggestWant.main || avatar.biggestWant.subPoints.length === 0) {
-      emptyFields.push('biggestWant');
-    }
-
-    // Check array fields
-    const arrayFields: (keyof AvatarData)[] = ['painPoints', 'desires', 'offerResults', 'humiliation', 'frustrations', 'complaints', 'worries'];
-    arrayFields.forEach(field => {
-      const value = avatar[field];
-      if (Array.isArray(value)) {
-        if (value.length === 0) emptyFields.push(field);
-      } else {
-        emptyFields.push(field); // Field is not an array as expected
-      }
-    });
-
-    // Check costOfNotBuying
-    if (!avatar.costOfNotBuying || 
-        !avatar.costOfNotBuying.emotional || 
-        !avatar.costOfNotBuying.financial || 
-        !avatar.costOfNotBuying.social) {
-      emptyFields.push('costOfNotBuying');
-    }
-
-    // Check biggestProblem
-    if (!avatar.biggestProblem || 
-        !avatar.biggestProblem.financial || 
-        !avatar.biggestProblem.financial.desire || 
-        !avatar.biggestProblem.financial.problem ||
-        !avatar.biggestProblem.emotional || 
-        !avatar.biggestProblem.emotional.desire || 
-        !avatar.biggestProblem.emotional.problem) {
-      emptyFields.push('biggestProblem');
-    }
-
-    return emptyFields;
-  };
-
-  const cancelEdits = () => {
-    dispatch({ type: 'SET_AVATAR', avatar: null });
-    setIsEditing(false)
-  }
 
   const fillExampleData = () => {
-    if (step === 1) {
-      setInitialData({
-        targetAudience: "Busy professionals, New parents, Small business owners",
-        helpDescription: "Helping them manage their time more effectively and reduce stress",
-        offerType: "lowTicket",
-      });
-      toast.success("Example data filled!");
-    } else {
-      // You can define what filling example data means for step 2
-      // For now, let's just show a toast
-      toast("Example data is only available in step 1");
-    }
-  };
+    const examples = [
+      {
+        targetAudience: "busy professionals",
+        helpDescription: "develop a side hustle while working full-time"
+      },
+      {
+        targetAudience: "new moms",
+        helpDescription: "start an online business while taking care of their baby"
+      },
+      {
+        targetAudience: "real estate agents",
+        helpDescription: "get more high-quality leads using social media"
+      },
+      {
+        targetAudience: "fitness trainers",
+        helpDescription: "create and sell online workout programs"
+      },
+      {
+        targetAudience: "teachers",
+        helpDescription: "create and sell digital educational resources"
+      },
+      {
+        targetAudience: "food bloggers",
+        helpDescription: "monetize their recipes and cooking content"
+      }
+    ];
 
-  const renderEditableField = (label: string, fieldPath: string, value: string) => {
-    return (
-      <div className="mb-4">
-        <Label>{label}</Label>
-        <Input
-          value={value}
-          onChange={(e) => handleEditChange(fieldPath, e.target.value)}
-          className="mt-1"
-        />
-      </div>
-    );
-  };
+    // Pick a random example
+    const randomExample = examples[Math.floor(Math.random() * examples.length)];
 
-  const renderEditableList = (label: string, fieldPath: string, list: any[] | string) => {
-    const items = Array.isArray(list) ? list : [list];
-    return (
-      <div className="mb-4">
-        <Label>{label}</Label>
-        {items.map((item, index) => {
-          const itemPath = `${fieldPath}[${index}]`;
-          return (
-            <div key={index} className="flex items-center mt-1">
-              {typeof item === 'object' ? (
-                <>
-                  {Object.entries(item).map(([key, value]) => (
-                    <Input
-                      key={key}
-                      value={value as string}
-                      onChange={(e) => handleEditChange(`${itemPath}.${key}`, e.target.value)}
-                      className="flex-grow mr-2"
-                      placeholder={key}
-                    />
-                  ))}
-                </>
-              ) : (
-                <Input
-                  value={item}
-                  onChange={(e) => handleEditChange(itemPath, e.target.value)}
-                  className="flex-grow"
-                />
-              )}
-              <Button
-                onClick={() => handleRemoveItem(fieldPath, index)}
-                variant="ghost"
-                size="sm"
-                className="ml-2"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          );
-        })}
-        <Button
-          onClick={() => handleAddItem(fieldPath)}
-          variant="outline"
-          size="sm"
-          className="mt-2"
-        >
-          <Plus className="mr-2 h-4 w-4" /> Add Item
-        </Button>
-      </div>
-    );
-  };
-
-  const renderEditableContent = (section: string) => {
-    if (!editedAvatar) return null;
-    const property = sectionToPropertyMap[section];
-    const sectionData = editedAvatar[property as keyof AvatarData];
-
-    if (property === 'details') {
-      return (
-        <div className="space-y-4">
-          {Object.entries(sectionData as Record<string, string>).map(([key, value]) => (
-            <div key={key} className="flex flex-col">
-              <Label htmlFor={key} className="mb-1 font-semibold capitalize">{key}</Label>
-              <Input
-                id={key}
-                value={value}
-                onChange={(e) => handleEditChange(`${property}.${key}`, e.target.value)}
-                className="w-full"
-              />
-            </div>
-          ))}
-        </div>
-      );
-    }
-
-    if (Array.isArray(sectionData)) {
-      return (
-        <div>
-          {sectionData.map((item, index) => (
-            <div key={index} className="flex items-center mb-2">
-              {typeof item === 'string' ? (
-                <Input
-                  value={item}
-                  onChange={(e) => handleEditChange(`${property}[${index}]`, e.target.value)}
-                  className="flex-grow mr-2"
-                />
-              ) : (
-                <div className="w-full">
-                  <Input
-                    value={item.main}
-                    onChange={(e) => handleEditChange(`${property}[${index}].main`, e.target.value)}
-                    className="w-full mb-2"
-                  />
-                  {item.subPoints.map((subPoint, subIndex) => (
-                    <Input
-                      key={subIndex}
-                      value={subPoint}
-                      onChange={(e) => handleEditChange(`${property}[${index}].subPoints[${subIndex}]`, e.target.value)}
-                      className="w-full mb-2"
-                    />
-                  ))}
-                </div>
-              )}
-              <Button
-                onClick={() => handleRemoveItem(property, index)}
-                variant="ghost"
-                size="sm"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-          <Button
-            onClick={() => handleAddItem(property)}
-            variant="outline"
-            size="sm"
-            className="mt-2"
-          >
-            <Plus className="mr-2 h-4 w-4" /> Add Item
-          </Button>
-        </div>
-      );
-    } else if (typeof sectionData === 'object' && sectionData !== null) {
-      // Handle object types (like biggestProblem)
-      return (
-        <div>
-          {Object.entries(sectionData).map(([key, value]) => (
-            <div key={key} className="mb-4">
-              <Label>{key}</Label>
-              {typeof value === 'object' && value !== null ? (
-                Object.entries(value).map(([subKey, subValue]) => (
-                  <div key={subKey} className="mt-2">
-                    <Label>{subKey}</Label>
-                    <Input
-                      value={subValue as string}
-                      onChange={(e) => handleEditChange(`${property}.${key}.${subKey}`, e.target.value)}
-                      className="mt-1"
-                    />
-                  </div>
-                ))
-              ) : (
-                <Input
-                  value={value as string}
-                  onChange={(e) => handleEditChange(`${property}.${key}`, e.target.value)}
-                  className="mt-1"
-                />
-              )}
-            </div>
-          ))}
-        </div>
-      );
-    }
-
-    // For any other type of data, render as is
-    return <pre>{JSON.stringify(sectionData, null, 2)}</pre>;
-  };
-
-  const handleEditorChange = (content: string, section: string) => {
-    setEditorContents(prev => ({ ...prev, [section]: content }));
-    // You may want to debounce this update to avoid too frequent state changes
-    setGeneratedAvatar(prev => {
-      if (!prev) return prev;
-      const property = sectionToPropertyMap[section];
-      return { ...prev, [property]: content };
+    setFormData({
+      targetAudience: randomExample.targetAudience,
+      helpDescription: randomExample.helpDescription
     });
   };
-
-  const handleAddItem = useCallback((path: string) => {
-    dispatch({ type: 'ADD_ITEM', path });
-  }, []);
 
   const avatarSections = [
     { id: "personal-details", title: "Personal Details", icon: "👤" },
@@ -665,17 +556,77 @@ export function AvatarCreatorComponent() {
     { id: "biggest-problem", title: "Biggest Problem", icon: "❗" },
     { id: "humiliation", title: "Humiliation", icon: "😓" },
     { id: "frustrations", title: "Frustrations", icon: "😤" },
-    { id: "complaints", title: "Complaints", icon: "🗣️" },
+    { id: "complaints", title: "Complaints", icon: "🗣" },
     { id: "cost-of-not-buying", title: "Cost of Not Buying", icon: "💸" },
-    { id: "biggest-want", title: "Biggest Want", icon: "🌟" },
+    { id: "biggest-want", title: "Biggest Want", icon: "⭐" }, // Added icon for Biggest Want
   ];
 
   const renderSectionContent = (section: string) => {
     if (!generatedAvatar) return null;
-    const property = sectionToPropertyMap[section];
-    const sectionData = generatedAvatar[property as keyof AvatarTypes.AvatarData];
 
-    if (!sectionData) return <p>No data available for this section.</p>;
+    // Get the content from editorContents first
+    const editorContent = editorContents[section];
+    
+    // If no editor content, get from generatedAvatar
+    if (!editorContent) {
+      const property = sectionToPropertyMap[section];
+      const sectionData = generatedAvatar[property as keyof AvatarTypes.AvatarData] || 
+                         generatedAvatar[property.toLowerCase() as keyof AvatarTypes.AvatarData];
+
+      debug.log({
+        message: `Rendering section ${section}`,
+        data: {
+          hasEditorContent: !!editorContent,
+          hasSectionData: !!sectionData,
+          rawContent: sectionData
+        }
+      }, 'renderSectionContent');
+
+      if (!sectionData) {
+        debug.warn(`No data available for section: ${section}`, 'renderSectionContent');
+        return <p>No data available for this section.</p>;
+      }
+
+      // Parse JSON content if needed
+      let formattedContent = '';
+      try {
+        if (typeof sectionData === 'string' && (sectionData.startsWith('{') || sectionData.startsWith('['))) {
+          const parsed = JSON.parse(sectionData);
+          if (parsed.headline && Array.isArray(parsed.points)) {
+            formattedContent = `<h3>${parsed.headline}</h3>\n${parsed.points.map((point: string) => `• ${point}`).join('\n')}`;
+          } else {
+            formattedContent = typeof sectionData === 'string' ? sectionData : JSON.stringify(sectionData);
+          }
+        } else if (typeof sectionData === 'object' && sectionData !== null) {
+          // Handle AvatarDetails type
+          if ('name' in sectionData || 'career' in sectionData) {
+            formattedContent = Object.entries(sectionData)
+              .filter(([_, value]) => value)
+              .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+              .join('\n');
+          } else {
+            formattedContent = JSON.stringify(sectionData);
+          }
+        } else {
+          formattedContent = String(sectionData);
+        }
+      } catch (error) {
+        debug.error({
+          message: `Error parsing section content: ${section}`,
+          error,
+          content: sectionData
+        }, 'renderSectionContent');
+        formattedContent = String(sectionData);
+      }
+
+      // Update editor contents
+      if (formattedContent) {
+        setEditorContents(prev => ({
+          ...prev,
+          [section]: formattedContent
+        }));
+      }
+    }
 
     const sectionInfo = avatarSections.find(s => s.id === section);
     const sectionTitle = sectionInfo ? `${sectionInfo.icon} ${sectionInfo.title}` : section;
@@ -685,7 +636,7 @@ export function AvatarCreatorComponent() {
         <h2 className="text-xl font-bold mb-4">{sectionTitle}</h2>
         <ReactQuill
           theme="snow"
-          value={editorContents[section] || ''}
+          value={editorContent || ''}
           onChange={(content) => handleEditorChange(content, section)}
           modules={{
             toolbar: [
@@ -696,137 +647,181 @@ export function AvatarCreatorComponent() {
               ['clean']
             ],
           }}
+          className="bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
         />
       </div>
     );
   };
 
+  const emojiMap = {
+    '[Person]': '👤',
+    '[Book]': '📖',
+    '[Target]': '🎯',
+    '[Pained Face]': '😣',
+    '[Sparkles]': '✨',
+    '[Trophy]': '🏆',
+    '[Exclamation]': '❗',
+    '[Downcast Face]': '',
+    '[Frustrated Face]': '😤',
+    '[Speaking Head]': '🗣️',
+    '[Money with Wings]': '💸',
+    '[Star]': '⭐',
+  };
+
+  // Add this comment to suppress the warning
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  function replacePlaceholders(text: string): string {
+    return Object.entries(emojiMap).reduce((acc, [placeholder, emoji]) => 
+      acc.split(placeholder).join(emoji), text);
+  }
+
   const generatePDF = async () => {
     if (!generatedAvatar) return;
 
-    const pdf = new jsPDF();
-    const pageWidth = pdf.internal.pageSize.width;
-    const pageHeight = pdf.internal.pageSize.height;
-    let yOffset = 20; // Initial top margin
-    const leftMargin = 20;
-    const rightMargin = 20;
-    const maxContentWidth = pageWidth - leftMargin - rightMargin;
+    const pdf = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    });
 
-    // Set a base font style
-    pdf.setFont("helvetica", "normal");
-
-    // Function to add styled text with color, wrapping, and proper spacing
-    const addStyledText = (text: string, fontSize: number, isBold = false, color = [0, 0, 0], indent = 0) => {
-      pdf.setFontSize(fontSize);
-      pdf.setFont('helvetica', isBold ? 'bold' : 'normal');
-      pdf.setTextColor(color[0], color[1], color[2]);
-      const splitText = pdf.splitTextToSize(text, maxContentWidth - indent);
-      splitText.forEach((line: string) => {
-        pdf.text(line, leftMargin + indent, yOffset);
-        yOffset += fontSize * 0.8; // Adjust line height
-      });
-      yOffset += 5; // Add extra space after each text block
+    // Helper function to parse and format content
+    const formatPDFContent = (content: any): string => {
+      try {
+        if (typeof content === 'string') {
+          // Try to parse JSON string
+          if (content.startsWith('{')) {
+            const parsed = JSON.parse(content);
+            if (parsed.headline && Array.isArray(parsed.points)) {
+              return `${parsed.headline}\n${parsed.points.map((point: string) => `• ${point}`).join('\n')}`;
+            }
+            // Handle personal details
+            if (parsed.name || parsed.career) {
+              return Object.entries(parsed)
+                .filter(([_, value]) => value)
+                .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+                .join('\n');
+            }
+          }
+          // If not JSON or parsing fails, return cleaned string
+          return content.replace(/<[^>]*>/g, '');
+        }
+        // Handle object directly
+        if (typeof content === 'object' && content !== null) {
+          if (content.headline && Array.isArray(content.points)) {
+            return `${content.headline}\n${content.points.map((point: string) => `• ${point}`).join('\n')}`;
+          }
+          if (content.name || content.career) {
+            return Object.entries(content)
+              .filter(([_, value]) => value)
+              .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+              .join('\n');
+          }
+        }
+        return String(content);
+      } catch (error) {
+        console.error('Error formatting PDF content:', error);
+        return String(content);
+      }
     };
 
-    // Add a simple header for the document with color
-    const addHeader = (title: string) => {
-      pdf.setFillColor(200, 200, 250);  // Light blue background
-      pdf.rect(leftMargin, yOffset, maxContentWidth, 10, 'F');  // Filled rectangle for background
-      addStyledText(title, 16, true, [0, 0, 128]);  // Add header text with color
-    };
+    // Add title and avatar info
+    pdf.setFillColor(128, 0, 128);
+    pdf.rect(0, 0, 210, 30, 'F');
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFontSize(24);
+    pdf.text('Avatar Profile', 20, 20);
 
-    // Add the avatar image
+    let yPos = 40;
+
+    // Add avatar image if available
     if (avatarImageUrl) {
       try {
         const img = await loadImage(avatarImageUrl);
-        const imgWidth = 50;
-        const imgHeight = (img.height * imgWidth) / img.width;
-        pdf.addImage(avatarImageUrl, 'JPEG', leftMargin, yOffset, imgWidth, imgHeight);
-        yOffset += imgHeight + 10;
-      } catch (error) {
-        console.error('Failed to load avatar image:', error);
-      }
-    }
-
-    // Add avatar name and niche with color styling
-    addStyledText(generatedAvatar.details.name || 'Avatar', 18, true, [0, 0, 0]);
-    addStyledText(generatedAvatar.details.niche || 'General', 14, false, [80, 80, 80]);
-
-    // Loop through sections and style each
-    for (const section of avatarSections) {
-      addHeader(section.icon + ' ' + section.title);  // Use header style for section title
-
-      // Parse content from editor
-      const content = editorContents[section.id] || '';
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(content, 'text/html');
-
-      doc.body.childNodes.forEach((node) => {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          const element = node as HTMLElement;
-          switch (element.tagName) {
-            case 'H1':
-            case 'H2':
-            case 'H3':
-              addStyledText(element.textContent || '', 14, true, [50, 50, 50]);
-              break;
-            case 'P':
-              addStyledText(element.textContent || '', 12, false, [0, 0, 0]);
-              break;
-            case 'UL':
-              element.querySelectorAll('li').forEach((li, index) => {
-                if (index === 0) {
-                  // Main point bold
-                  addStyledText('• ' + (li.textContent || ''), 12, true, [0, 0, 0], 5);
-                } else {
-                  // Subsequent points
-                  addStyledText('• ' + (li.textContent || ''), 12, false, [0, 0, 0], 10);
-                }
-              });
-              break;
-            case 'OL':
-              element.querySelectorAll('li').forEach((li, index) => {
-                const number = index + 1;
-                addStyledText(`${number}. ${li.textContent || ''}`, 12, index === 0, [0, 0, 0], index === 0 ? 5 : 10);
-              });
-              break;
-          }
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0);
+          const imgData = canvas.toDataURL('image/png');
+          pdf.addImage(imgData, 'PNG', 20, yPos, 40, 40);
+          yPos += 50;
         }
-      });
-
-      // Add space between sections
-      yOffset += 10;
-
-      // Handle page break if necessary
-      if (yOffset > pageHeight - 30) {
-        pdf.addPage();
-        yOffset = 20;
+      } catch (error) {
+        console.error('Failed to add image to PDF:', error);
       }
     }
 
-    // Add footer
-    const addFooter = () => {
-      pdf.setFontSize(10);
-      pdf.setFont('helvetica', 'normal');
-      pdf.setTextColor(100, 100, 100);
-      pdf.text(`Page ${pdf.internal.getNumberOfPages()}`, pageWidth - 30, pageHeight - 10);  // Page numbering
-    };
-    addFooter();
+    // Define sections to include in PDF
+    const sections = [
+      { title: "Personal Details", content: generatedAvatar.details },
+      { title: "Story", content: generatedAvatar.story },
+      { title: "Current Wants", content: generatedAvatar.current_wants || generatedAvatar.currentWants },
+      { title: "Pain Points", content: generatedAvatar.pain_points || generatedAvatar.painPoints },
+      { title: "Desires", content: generatedAvatar.desires },
+      { title: "Offer Results", content: generatedAvatar.offer_results || generatedAvatar.offerResults },
+      { title: "Biggest Problem", content: generatedAvatar.biggest_problem || generatedAvatar.biggestProblem },
+      { title: "Humiliation", content: generatedAvatar.humiliation },
+      { title: "Frustrations", content: generatedAvatar.frustrations },
+      { title: "Complaints", content: generatedAvatar.complaints },
+      { title: "Cost of Not Buying", content: generatedAvatar.cost_of_not_buying || generatedAvatar.costOfNotBuying },
+      { title: "Biggest Want", content: generatedAvatar.biggest_want || generatedAvatar.biggestWant }
+    ];
 
-    pdf.save('avatar-profile.pdf');
+    // Add each section
+    for (const { title, content } of sections) {
+      // Check if we need a new page
+      if (yPos > 250) {
+        pdf.addPage();
+        yPos = 20;
+      }
+
+      // Add section title
+      pdf.setFillColor(240, 240, 250);
+      pdf.rect(15, yPos - 5, 180, 10, 'F');
+      pdf.setTextColor(0, 0, 128);
+      pdf.setFontSize(14);
+      pdf.text(title, 20, yPos);
+      yPos += 10;
+
+      // Format and add content
+      pdf.setTextColor(0, 0, 0);
+      pdf.setFontSize(12);
+      const formattedContent = formatPDFContent(content);
+      
+      // Split content into lines that fit the page width
+      const lines = pdf.splitTextToSize(formattedContent, 170);
+      
+      // Add each line
+      for (const line of lines) {
+        if (yPos > 270) {
+          pdf.addPage();
+          yPos = 20;
+        }
+        pdf.text(line, 20, yPos);
+        yPos += 6;
+      }
+
+      yPos += 10;
+    }
+
+    // Save the PDF
+    const fileName = getAvatarName(generatedAvatar).replace(/[^a-zA-Z0-9]/g, '_');
+    pdf.save(`${fileName}_profile.pdf`);
   };
 
+  // Helper function to load images
   const loadImage = (url: string): Promise<HTMLImageElement> => {
     return new Promise((resolve, reject) => {
-      const img = new Image();
+      const img = document.createElement('img');
+      img.crossOrigin = 'anonymous';
       img.onload = () => resolve(img);
-      img.onerror = (error: Event) => reject(error);
+      img.onerror = reject;
       img.src = url;
     });
   };
 
   const addWithAI = async (section: string) => {
-    setGeneratingSection(section);
     const toastId = toast.loading(`Generating new content for ${section}...`);
 
     try {
@@ -847,16 +842,44 @@ export function AvatarCreatorComponent() {
       const newPoints = await response.json();
       console.log('New points generated:', newPoints);
 
+      // Format new points into HTML
+      let formattedNewPoints = '';
+      if (Array.isArray(newPoints)) {
+        formattedNewPoints = newPoints.map(point => {
+          if (typeof point === 'string') {
+            return `<p>• ${point}</p>`;
+          } else if (point.main) {
+            let html = `<p>• ${point.main}</p>`;
+            if (point.subPoints?.length) {
+              html += point.subPoints.map((sub: string) => `<p>  - ${sub}</p>`).join('');
+            }
+            return html;
+          }
+          return '';
+        }).join('');
+      }
+
+      // Update the avatar data without triggering image generation
       setGeneratedAvatar((prev) => {
         if (!prev) return prev;
         const property = sectionToPropertyMap[section];
-        const currentContent = prev[property as keyof AvatarData];
-        const updatedContent = formatSectionData(currentContent) + '<br><br>' + formatSectionData(newPoints);
+        const currentContent = prev[property as keyof AvatarData] || '';
+        
         return {
           ...prev,
-          [property]: updatedContent,
+          [property]: currentContent ? 
+            `${currentContent}<br><br>${formattedNewPoints}` : 
+            formattedNewPoints,
         };
       });
+
+      // Update editor contents
+      setEditorContents(prev => ({
+        ...prev,
+        [section]: prev[section] ? 
+          `${prev[section]}<br><br>${formattedNewPoints}` : 
+          formattedNewPoints
+      }));
 
       toast.success(`Added new points to ${section}`, { id: toastId });
     } catch (error) {
@@ -864,15 +887,7 @@ export function AvatarCreatorComponent() {
       toast.error(`Failed to add new points: ${error instanceof Error ? error.message : "Unknown error"}`, { id: toastId });
     } finally {
       setLoading(false);
-      setGeneratingSection(null);
     }
-  };
-
-  const fadeIn = {
-    initial: { opacity: 0 },
-    animate: { opacity: 1 },
-    exit: { opacity: 0 },
-    transition: { duration: 0.3 }
   };
 
   const slideIn = {
@@ -882,122 +897,314 @@ export function AvatarCreatorComponent() {
     transition: { duration: 0.3 }
   };
 
-  const renderSection = (section: string, content: React.ReactNode) => (
-    <motion.div {...fadeIn}>
-      <AccordionItem value={section}>
-        <AccordionTrigger className="text-black dark:text-white">{section}</AccordionTrigger>
-        <AccordionContent className="text-black dark:text-white">
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.3 }}
-          >
-            {content}
-            {/* The "Add with AI" button has been removed from here */}
-          </motion.div>
-        </AccordionContent>
-      </AccordionItem>
-    </motion.div>
-  );
-
-  const extractNameFromStory = (story: string): string => {
-    const words = story.split(' ');
-    const nameIndex = words.findIndex(word => /^[A-Z][a-z]+$/.test(word));
-    return nameIndex !== -1 ? words[nameIndex] : 'Unnamed';
-  };
-
-  const getAvatarNameAndNiche = () => {
-    if (generatedAvatar) {
-      const name = extractNameFromStory(generatedAvatar.story);
-      const niche = truncate(
-        initialData.helpDescription || 
-        'Unknown Niche', 
-        { length: 30, omission: '...' }
-      );
-      return { name, niche };
-    }
-    return { name: 'Unnamed', niche: 'Unknown Niche' };
-  };
-
-  const getAvatarDescription = (avatar: AvatarData | null) => {
+  const getAvatarDescription = (avatar: AvatarData | null): string => {
     if (!avatar) return "Your AI-Generated Avatar";
-    if (avatar.shortDescription) {
-      const { name, profession, niche } = avatar.shortDescription;
-      return `${name} - ${profession} - ${niche}`;
-    } else {
-      const { name, career } = avatar.details;
-      return `${name || 'Unnamed'} - ${career || 'Unknown Profession'}`;
+
+    // Extract name and career from details
+    const details = avatar.details || '';
+    let name = '';
+    let career = '';
+
+    if (typeof details === 'object') {
+      name = details.name || '';
+      career = details.career || details.profession || '';
+    } else if (typeof details === 'string') {
+      // Clean up the string from HTML tags first
+      const cleanDetails = details.replace(/<[^>]*>/g, '');
+      
+      const nameMatch = cleanDetails.match(/Name:\s*([^•\n,]+)/);
+      const careerMatch = cleanDetails.match(/Career:\s*([^•\n,]+)/);
+      
+      name = nameMatch ? nameMatch[1].trim() : '';
+      career = careerMatch ? careerMatch[1].trim() : '';
     }
+
+    // Clean up the values
+    name = name.replace(/[^\w\s-]/g, '').trim();
+    career = career.replace(/[^\w\s-]/g, '').trim();
+
+    return name && career ? `${name} - ${career}` : 'Unnamed Avatar';
   };
 
-  const saveAvatar = () => {
-    if (generatedAvatar) {
-      const { name, niche } = getAvatarNameAndNiche();
-      const avatarName = `${name} - ${niche}`;
-      
-      const updatedAvatar: AvatarData = { 
-        ...generatedAvatar, 
-        name: avatarName,
-        imageUrl: avatarImageUrl || undefined // Use undefined instead of null
+  // Update the handleSaveAvatar function
+  const handleSaveAvatar = async () => {
+    if (!user?.id || !generatedAvatar) {
+      debug.error('Cannot save avatar: missing user ID or avatar data', 'handleSaveAvatar');
+      toast.error('No avatar to save');
+      return;
+    }
+
+    try {
+      debug.log({
+        message: 'Starting avatar save process',
+        data: {
+          userId: user.id,
+          avatarId: generatedAvatar.id,
+          sections: Object.keys(editorContents)
+        }
+      }, 'handleSaveAvatar');
+
+      // Map editor contents back to avatar data structure
+      const updatedAvatarData = {
+        ...generatedAvatar,
+        user_id: user.id,
+        user_email: user.emailAddresses[0]?.emailAddress || '',
+        targetAudience: formData.targetAudience,
+        helpDescription: formData.helpDescription,
+        imageUrl: avatarImageUrl
       };
-      
-      if (currentAvatarId !== null) {
-        // Update existing avatar
-        const updatedAvatars = savedAvatars.map((avatar, index) =>
-          index === currentAvatarId ? updatedAvatar : avatar
-        );
-        setSavedAvatars(updatedAvatars);
-        toast.success("Avatar updated successfully!");
+
+      // Map each section's content
+      Object.entries(sectionToPropertyMap).forEach(([sectionId, propertyKey]) => {
+        const content = editorContents[sectionId];
+        debug.log(`Processing section ${sectionId} for save:`, {
+          propertyKey,
+          hasContent: !!content
+        }, 'handleSaveAvatar');
+        
+        if (content) {
+          updatedAvatarData[propertyKey] = content;
+        }
+      });
+
+      debug.log({
+        message: 'Prepared avatar data for save',
+        data: updatedAvatarData
+      }, 'handleSaveAvatar');
+
+      let savedAvatar;
+      if (generatedAvatar.id) {
+        debug.log({
+          message: 'Updating existing avatar',
+          id: generatedAvatar.id
+        }, 'handleSaveAvatar');
+        savedAvatar = await updateAvatar(generatedAvatar.id, updatedAvatarData);
       } else {
-        // Save as new avatar
-        const updatedAvatars = [...savedAvatars, updatedAvatar];
-        setSavedAvatars(updatedAvatars);
-        setCurrentAvatarId(updatedAvatars.length - 1);
-        toast.success("New avatar saved successfully!");
+        debug.log('Creating new avatar', 'handleSaveAvatar');
+        savedAvatar = await saveAvatar(user.id, updatedAvatarData);
       }
+
+      setGeneratedAvatar({ ...savedAvatar });
+      debug.log({
+        message: 'Avatar saved successfully',
+        data: savedAvatar
+      }, 'handleSaveAvatar');
+      toast.success('Avatar saved successfully!');
+
+      await fetchSavedAvatars();
+    } catch (error) {
+      debug.error({
+        message: 'Error saving avatar',
+        error
+      }, 'handleSaveAvatar');
+      toast.error('Failed to save avatar');
     }
   };
 
-  const loadSavedAvatar = (avatar: AvatarData, index: number) => {
-    setGeneratedAvatar(avatar);
-    setCurrentAvatarId(index);
-    setStep(2);
-    toast.success("Avatar loaded successfully!");
+  // Update the useEffect to use debug
+  useEffect(() => {
+    if (generatedAvatar) {
+      const description = getAvatarDescription(generatedAvatar);
+      debug.log('Updated avatar description:', description, 'handleSaveAvatar');
+    }
+  }, [generatedAvatar]);
+
+  const loadSavedAvatar = async (avatar: AvatarData, index: number) => {
+    try {
+      debug.log({
+        message: 'Starting to load avatar',
+        data: { 
+          id: avatar.id,
+          name: avatar.name,
+          allFields: Object.keys(avatar)
+        }
+      }, 'loadSavedAvatar');
+
+      // Initialize contents for all sections
+      const initialContents: Record<string, string> = {};
+      
+      // Helper function to parse and format content
+      const parseContent = (content: string | null | undefined): string => {
+        if (!content) return '';
+
+        try {
+          // Special handling for personal details
+          if (typeof content === 'string' && content.includes('"name":')) {
+            const parsed = JSON.parse(content);
+            return Object.entries(parsed)
+              .filter(([_, value]) => value)
+              .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+              .join('\n');
+          }
+
+          // Handle other JSON content
+          if (typeof content === 'string' && (content.startsWith('{') || content.startsWith('['))) {
+            const parsed = JSON.parse(content);
+            if (parsed.headline && Array.isArray(parsed.points)) {
+              return `<h3>${parsed.headline}</h3>\n${parsed.points.map((point: string) => `• ${point}`).join('\n')}`;
+            }
+          }
+
+          // If it's already formatted HTML or plain text, return as is
+          return content;
+        } catch (error) {
+          debug.error({
+            message: 'Error parsing content',
+            error,
+            content
+          }, 'parseContent');
+          return content || '';
+        }
+      };
+
+      // Map sections to their database fields
+      const sectionMappings = {
+        'personal-details': avatar.details,
+        'story': avatar.story,
+        'current-wants': avatar.current_wants,
+        'pain-points': avatar.pain_points,
+        'desires': avatar.desires,
+        'offer-results': avatar.offer_results,
+        'biggest-problem': avatar.biggest_problem,
+        'humiliation': avatar.humiliation,
+        'frustrations': avatar.frustrations,
+        'complaints': avatar.complaints,
+        'cost-of-not-buying': avatar.cost_of_not_buying,
+        'biggest-want': avatar.biggest_want
+      };
+
+      // Process each section
+      Object.entries(sectionMappings).forEach(([sectionId, content]) => {
+        debug.log({
+          message: `Processing section ${sectionId}`,
+          data: {
+            hasContent: !!content,
+            type: typeof content,
+            rawContent: content
+          }
+        }, 'loadSavedAvatar');
+
+        // Parse and format the content
+        const formattedContent = parseContent(content as string);
+        initialContents[sectionId] = formattedContent;
+
+        debug.log({
+          message: `Formatted content for ${sectionId}`,
+          data: {
+            before: content,
+            after: formattedContent
+          }
+        }, 'loadSavedAvatar');
+      });
+
+      // Set all the state
+      setCurrentAvatarId(index);
+      setGeneratedAvatar(avatar);
+      setEditorContents(initialContents);
+      setAvatarImageUrl(avatar.image_url || avatar.imageUrl || null);
+      setFormData({
+        targetAudience: avatar.target_audience || avatar.targetAudience || '',
+        helpDescription: avatar.help_description || avatar.helpDescription || ''
+      });
+
+      debug.log({
+        message: 'Final editor contents',
+        data: Object.entries(initialContents).map(([key, value]) => ({
+          section: key,
+          hasContent: !!value,
+          contentPreview: value?.substring(0, 50)
+        }))
+      }, 'loadSavedAvatar');
+
+      setStep(2);
+      toast.success("Avatar loaded successfully!");
+    } catch (error) {
+      debug.error({
+        message: 'Error loading avatar',
+        error
+      }, 'loadSavedAvatar');
+      toast.error('Failed to load avatar');
+    }
   };
 
-  const deleteCurrentAvatar = () => {
-    if (currentAvatarId !== null) {
+  // Helper function to check if a string is valid JSON
+  const isJsonString = (str: any): boolean => {
+    if (typeof str !== 'string') return false;
+    try {
+      JSON.parse(str);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const deleteCurrentAvatar = async () => {
+    if (!generatedAvatar?.id || currentAvatarId === null) {
+      toast.error('No avatar selected for deletion.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      
+      // Delete from Supabase
+      await deleteAvatar(generatedAvatar.id);
+
+      // Update local state
       const updatedAvatars = savedAvatars.filter((_, index) => index !== currentAvatarId);
       setSavedAvatars(updatedAvatars);
 
       if (updatedAvatars.length > 0) {
         // Load the next available avatar
-        const nextAvatarIndex = currentAvatarId >= updatedAvatars.length ? updatedAvatars.length - 1 : currentAvatarId;
-        setGeneratedAvatar(updatedAvatars[nextAvatarIndex]);
+        const nextAvatarIndex = Math.min(currentAvatarId, updatedAvatars.length - 1);
+        const nextAvatar = updatedAvatars[nextAvatarIndex];
+        
+        // Update all relevant states
+        setGeneratedAvatar(nextAvatar);
         setCurrentAvatarId(nextAvatarIndex);
+        
+        // Reset editor contents with the next avatar's data
+        const initialContents: Record<string, string> = {};
+        Object.entries(sectionToPropertyMap).forEach(([section, property]) => {
+          const sectionData = nextAvatar[property as keyof AvatarTypes.AvatarData];
+          if (sectionData) {
+            initialContents[section] = formatSectionData(sectionData);
+          }
+        });
+        setEditorContents(initialContents);
+
+        // Update form data
+        setFormData({
+          targetAudience: nextAvatar.targetAudience || '',
+          helpDescription: nextAvatar.helpDescription || ''
+        });
+
+        // Set avatar image
+        setAvatarImageUrl(nextAvatar.imageUrl || null);
+
         toast.success('Avatar deleted. Loaded next available avatar.');
       } else {
-        // No avatars left, return to initial screen
+        // No avatars left, reset all states
         setGeneratedAvatar(null);
         setCurrentAvatarId(null);
+        setEditorContents({});
+        setFormData({
+          targetAudience: '',
+          helpDescription: ''
+        });
+        setAvatarImageUrl(null);
         setStep(1);
         toast.success('Avatar deleted. No more avatars available.');
       }
-    } else {
-      toast.error('No avatar selected for deletion.');
+    } catch (error) {
+      console.error('Error deleting avatar:', error);
+      toast.error('Failed to delete avatar');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleAddSubPoint = useCallback((property: string, index: number) => {
-    dispatch({ 
-      type: 'EDIT_FIELD', 
-      path: `${property}[${index}].subPoints`, 
-      value: JSON.stringify([...JSON.parse(get(editedAvatar, `${property}[${index}].subPoints`, '[]')), ''])
-    });
-  }, [editedAvatar]);
-
-  const handleDownloadJSON = () => {
+  const handleDownloadAvatar = () => {
     if (generatedAvatar) {
       const jsonString = JSON.stringify(generatedAvatar, null, 2);
       const blob = new Blob([jsonString], { type: 'application/json' });
@@ -1012,191 +1219,509 @@ export function AvatarCreatorComponent() {
     }
   };
 
+  const ThemeToggleButton = () => (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+      className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-800 dark:text-white dark:hover:bg-gray-700 border-gray-300 dark:border-gray-600"
+    >
+      {theme === "light" ? <MoonIcon className="h-5 w-5" /> : <SunIcon className="h-5 w-5" />}
+      <span className="sr-only">Toggle theme</span>
+    </Button>
+  );
+
+  // Update the avatar display in the dropdown
+  const getAvatarName = (avatar: AvatarData): string => {
+    if (!avatar) {
+      return 'Unnamed Avatar';
+    }
+
+    // First try to get the name directly from the avatar name field
+    if (avatar.name) {
+      return avatar.name;
+    }
+
+    // If no name field, try to construct it from details
+    const details = avatar.details;
+    let name = '';
+    let career = '';
+
+    if (typeof details === 'object' && details !== null) {
+      name = details.name || '';
+      career = details.career || details.profession || '';
+    } else if (typeof details === 'string') {
+      try {
+        const parsed = JSON.parse(details);
+        name = parsed.name || '';
+        career = parsed.career || parsed.profession || '';
+      } catch {
+        // If parsing fails, try to extract from string
+        const nameMatch = details.match(/Name:\s*([^•\n,]+)/);
+        const careerMatch = details.match(/Career:\s*([^•\n,]+)/);
+        
+        name = nameMatch ? nameMatch[1].trim() : '';
+        career = careerMatch ? careerMatch[1].trim() : '';
+      }
+    }
+
+    // Clean up and format
+    name = name.replace(/[^\w\s-]/g, '').trim();
+    career = career.replace(/[^\w\s-]/g, '').trim();
+
+    return name && career ? `${name} - ${career}` : 'Unnamed Avatar';
+  };
+
+  const handleSaveConfirm = async () => {
+    if (!user?.id || !generatedAvatar) return;
+
+    try {
+      setLoading(true);
+      
+      // Save avatar data to Supabase
+      const { data: avatar, error } = await supabase
+        .from('avatars')
+        .insert([
+          {
+            user_id: user.id,
+            name: avatarName,
+            profession: typeof generatedAvatar.details === 'object' 
+              ? generatedAvatar.details.profession || generatedAvatar.details.career 
+              : undefined,
+            niche: typeof generatedAvatar.details === 'object' 
+              ? generatedAvatar.details.niche 
+              : undefined,
+            target_audience: generatedAvatar.targetAudience,
+            help_description: generatedAvatar.helpDescription,
+            details: generatedAvatar.details,
+            story: generatedAvatar.story,
+            current_wants: generatedAvatar.currentWants,
+            pain_points: generatedAvatar.painPoints,
+            desires: generatedAvatar.desires,
+            offer_results: generatedAvatar.offerResults,
+            biggest_problem: generatedAvatar.biggestProblem,
+            humiliation: generatedAvatar.humiliation,
+            frustrations: generatedAvatar.frustrations,
+            complaints: generatedAvatar.complaints,
+            cost_of_not_buying: generatedAvatar.costOfNotBuying,
+            biggest_want: generatedAvatar.biggestWant,
+            image_url: avatarImageUrl,
+            image_generation_keywords: generatedAvatar.imageGenerationKeywords,
+          }
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      toast.success('Avatar saved successfully');
+      setIsSaveDialogOpen(false);
+      setAvatarName('');
+    } catch (error) {
+      console.error('Error saving avatar:', error);
+      toast.error('Failed to save avatar');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const SaveDialog = () => (
+    <Dialog open={isSaveDialogOpen} onOpenChange={setIsSaveDialogOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Save Avatar</DialogTitle>
+          <DialogDescription>
+            Give your avatar a name to save it
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-4">
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Input
+              id="avatarName"
+              placeholder="Enter avatar name"
+              className="col-span-4"
+              value={avatarName}
+              onChange={(e) => setAvatarName(e.target.value)}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => setIsSaveDialogOpen(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSaveAvatar}
+            disabled={!avatarName.trim()}
+          >
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
+  const SavedAvatarsDropdown = () => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm">
+          Load Avatar <ChevronDown className="ml-2 h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-56">
+        <DropdownMenuLabel>Saved Avatars</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <div className="max-h-[300px] overflow-y-auto">
+          {savedAvatars.map((avatar: AvatarData, index) => (
+            <DropdownMenuItem
+              key={index}
+              onClick={() => loadSavedAvatar(avatar, index)}
+              className="text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
+            >
+              <div className="flex items-center gap-2">
+                <Avatar className="w-8 h-8">
+                  {avatar.imageUrl ? (
+                    <div className="w-full h-full rounded-full overflow-hidden">
+                      <Image 
+                        src={avatar.imageUrl} 
+                        alt={getAvatarName(avatar)}
+                        width={32}
+                        height={32}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  ) : (
+                    <AvatarFallback className="text-xs">
+                      AI
+                    </AvatarFallback>
+                  )}
+                </Avatar>
+                <span>{truncate(getAvatarName(avatar), { length: 20, omission: '...' })}</span>
+              </div>
+            </DropdownMenuItem>
+          ))}
+          {savedAvatars.length === 0 && (
+            <DropdownMenuItem disabled>
+              No saved avatars
+            </DropdownMenuItem>
+          )}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const SaveButton = () => (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => setIsSaveDialogOpen(true)}
+      className="bg-white dark:bg-gray-800"
+    >
+      <Save className="mr-2 h-4 w-4" />
+      Save Avatar
+    </Button>
+  );
+
+  // Add this new function near the top of the component
+  const fetchSavedAvatars = async () => {
+    if (!user?.id) return;
+    
+    try {
+      const { data: avatars, error } = await supabase
+        .from('avatars')
+        .select('*')
+        .eq('clerk_user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching avatars:', error);
+        return;
+      }
+
+      setSavedAvatars(avatars || []);
+    } catch (error) {
+      console.error('Error fetching saved avatars:', error);
+    }
+  };
+
+  // Add useEffect to fetch avatars when component mounts or user changes
+  useEffect(() => {
+    if (user?.id) {
+      fetchSavedAvatars();
+    }
+  }, [user?.id]);
+
   return (
     <div className="container mx-auto p-4 max-w-6xl">
+      <Dialog open={showLoadingDialog} onOpenChange={setShowLoadingDialog}>
+        <DialogContent className="sm:max-w-md border-0 bg-gradient-to-br from-white/90 to-white/50 dark:from-gray-900/90 dark:to-gray-900/50 backdrop-blur-lg">
+          <DialogHeader>
+            <DialogTitle className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent animate-pulse">
+              Generating Avatar
+            </DialogTitle>
+            <DialogDescription className="text-gray-600 dark:text-gray-300">
+              Please wait while we create your custom avatar profile...
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="flex flex-col items-center justify-center p-8 space-y-8">
+            <LoadingAnimation />
+            
+            <div className="space-y-2 text-gray-600 dark:text-gray-300">
+              <p className="animate-[fadeIn_1s_ease-in]">
+                🎨 Creating personality profile...
+              </p>
+              <p className="animate-[fadeIn_1s_ease-in_0.5s_both]">
+                ✨ Analyzing target audience...
+              </p>
+              <p className="animate-[fadeIn_1s_ease-in_1s_both]">
+                🎯 Crafting unique characteristics...
+              </p>
+            </div>
+
+            <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full mt-4 overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-purple-600 to-pink-600 rounded-full animate-[progressBar_2s_ease-in-out_infinite]" />
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {isClient ? (
         <>
           {step === 1 ? (
-            <Card className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-gray-900 dark:to-gray-800">
+            <Card className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-gray-800 dark:to-gray-700 dark:text-white">
               <CardHeader className="pb-0">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">
-                    AI Avatar + Offer Creator
+                  <CardTitle className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600 dark:from-purple-400 dark:to-pink-400">
+                    AI Avatar Magic
                   </CardTitle>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-                  >
-                    {theme === "light" ? <MoonIcon className="h-5 w-5" /> : <SunIcon className="h-5 w-5" />}
-                    <span className="sr-only">Toggle theme</span>
-                  </Button>
+                  <ThemeToggleButton />
                 </div>
-                <CardDescription className="text-lg mt-1">
+                <CardDescription className="text-lg mt-1 text-gray-600 dark:text-gray-300">
                   Tell us about your target audience
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <form onSubmit={(e) => { e.preventDefault(); generateAvatar(); }} className="space-y-6 mt-4">
+                <form onSubmit={(e) => { e.preventDefault(); handleGenerate(); }} className="space-y-6 mt-4">
                   <div className="space-y-2">
-                    <Label htmlFor="targetAudience">Who are you helping?</Label>
+                    <Label htmlFor="targetAudience" className="text-gray-700 dark:text-gray-200">Who are you helping?</Label>
                     <Input
                       id="targetAudience"
                       placeholder="E.g., Busy professionals, New parents, Small business owners"
-                      value={initialData.targetAudience}
+                      value={formData.targetAudience}
                       onChange={(e) => handleInputChange("targetAudience", e.target.value)}
+                      className={`bg-white dark:bg-gray-700 text-gray-800 dark:text-white ${errors.targetAudience ? 'border-red-500' : ''}`}
                     />
+                    {errors.targetAudience && <p className="text-red-500 text-sm mt-1">{errors.targetAudience}</p>}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="helpDescription">What are you helping them with?</Label>
+                    <Label htmlFor="helpDescription" className="text-gray-700 dark:text-gray-200">What are you helping them with?</Label>
                     <Textarea
                       id="helpDescription"
                       placeholder="Describe the problem you're solving or the transformation you're offering"
-                      value={initialData.helpDescription}
+                      value={formData.helpDescription}
                       onChange={(e) => handleInputChange("helpDescription", e.target.value)}
                       rows={4}
+                      className={`bg-white dark:bg-gray-700 text-gray-800 dark:text-white ${errors.helpDescription ? 'border-red-500' : ''}`}
                     />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="offerType">Choose your offer type</Label>
-                    <Select
-                      value={initialData.offerType}
-                      onValueChange={handleOfferTypeChange}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Select offer type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="lowTicket">Low Ticket Offer</SelectItem>
-                        <SelectItem value="highTicket">High Ticket Offer</SelectItem>
-                        <SelectItem value="both">Both</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {errors.helpDescription && <p className="text-red-500 text-sm mt-1">{errors.helpDescription}</p>}
                   </div>
                   <div className="flex space-x-2">
-                    <Button type="submit" className="bg-gradient-to-r from-purple-600 to-pink-600 text-white" disabled={loading}>
-                      {loading ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Generating Avatar
-                        </>
-                      ) : (
-                        "Generate Avatar and Offer"
-                      )}
+                    <Button
+                      onClick={handleGenerate}
+                      className="bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:from-purple-600 hover:to-pink-600 transition-all duration-200"
+                      disabled={loading}
+                    >
+                      Generate Avatar
                     </Button>
-                    <Button type="button" variant="outline" onClick={fillExampleData}>
+                    <Button type="button" variant="outline" onClick={fillExampleData} className="text-gray-800 dark:text-white border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">
                       Fill Example
                     </Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="bg-white/50 hover:bg-white/80">
+                        <Button variant="outline" size="sm" className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-800 dark:text-white dark:hover:bg-gray-700 border-gray-300 dark:border-gray-600">
                           Load Avatar <ChevronDown className="ml-2 h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent>
-                        <DropdownMenuLabel>Saved Avatars</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        {savedAvatars.map((avatar, index) => (
-                          <TooltipProvider key={index}>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <DropdownMenuItem onClick={() => loadSavedAvatar(avatar, index)}>
-                                  {truncate(avatar.name || `Avatar ${index + 1}`, { length: 20, omission: '...' })}
-                                </DropdownMenuItem>
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                <p>{avatar.name || `Avatar ${index + 1}`}</p>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        ))}
+                      <DropdownMenuContent className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                        <DropdownMenuLabel className="text-gray-800 dark:text-white">Saved Avatars</DropdownMenuLabel>
+                        <DropdownMenuSeparator className="bg-gray-200 dark:bg-gray-700" />
+                        <div className="max-h-[300px] overflow-y-auto">
+                          {savedAvatars.map((avatar, index) => (
+                            <DropdownMenuItem 
+                              key={index}
+                              onClick={() => loadSavedAvatar(avatar, index)}
+                              className="flex items-center gap-2 p-2 hover:bg-gray-100 dark:hover:bg-gray-700"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Avatar className="w-8 h-8">
+                                  {avatar.imageUrl ? (
+                                    <div className="w-full h-full rounded-full overflow-hidden">
+                                      <Image 
+                                        src={avatar.imageUrl} 
+                                        alt={getAvatarName(avatar)}
+                                        width={32}
+                                        height={32}
+                                        className="w-full h-full object-cover"
+                                        onError={(e) => {
+                                          console.error('Image failed to load:', e);
+                                          const target = e.target as HTMLImageElement;
+                                          target.src = '/placeholder-avatar.png';
+                                        }}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <AvatarFallback className="bg-gray-200 dark:bg-gray-600 text-xs text-gray-500 dark:text-gray-400">
+                                      AI
+                                    </AvatarFallback>
+                                  )}
+                                </Avatar>
+                                <div className="flex flex-col">
+                                  <span className="text-sm font-medium">{truncate(getAvatarName(avatar), { length: 20, omission: '...' })}</span>
+                                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                                    {(() => {
+                                      // Extract career from details
+                                      if (typeof avatar.details === 'string') {
+                                        const careerMatch = avatar.details.match(/Career:\s*([^,\n]+)/);
+                                        return careerMatch ? truncate(careerMatch[1].trim(), { length: 25 }) : 'No career specified';
+                                      }
+                                      // If details is an object
+                                      if (avatar.details && typeof avatar.details === 'object') {
+                                        return avatar.details.career || avatar.details.profession || 'No career specified';
+                                      }
+                                      return 'No career specified';
+                                    })()}
+                                  </span>
+                                </div>
+                              </div>
+                            </DropdownMenuItem>
+                          ))}
+                          {savedAvatars.length === 0 && (
+                            <DropdownMenuItem disabled className="text-gray-500 dark:text-gray-400">
+                              No saved avatars
+                            </DropdownMenuItem>
+                          )}
+                        </div>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
                 </form>
               </CardContent>
               <CardFooter className="flex justify-center mt-6">
-                <p className="text-sm text-muted-foreground">
-                  AI-powered avatar creation • Customizable profiles • Instant offer generation
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  AI-powered avatar creation • Customizable profiles  Instant generation
                 </p>
               </CardFooter>
             </Card>
           ) : (
             <motion.div key="step2" {...slideIn}>
-              <Card className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-gray-900 dark:to-gray-800">
+              <Card className="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-gray-800 dark:to-gray-700 dark:text-white">
                 <CardHeader>
-                  <div className="flex items-center justify-between flex-wrap gap-4">
-                    <div className="flex items-center space-x-4">
-                      <Avatar className="w-24 h-24 border-4 border-white shadow-lg">
+                  <div className="flex items-center space-x-4">
+                    <div className="relative w-24 h-24">
+                      <Avatar className="w-full h-full">
                         {avatarImageUrl ? (
-                          <AvatarImage src={avatarImageUrl} alt="Generated Avatar" />
+                          <div className="w-full h-full rounded-full overflow-hidden border-4 border-white shadow-lg">
+                            <Image 
+                              src={avatarImageUrl} 
+                              alt={getAvatarDescription(generatedAvatar)} 
+                              width={96}
+                              height={96}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                console.error('Image failed to load:', e);
+                                const target = e.target as HTMLImageElement;
+                                target.src = '/placeholder-avatar.png'; // Add a placeholder image
+                              }}
+                            />
+                          </div>
                         ) : (
-                          <AvatarFallback>AI</AvatarFallback>
+                          <AvatarFallback className="w-full h-full flex items-center justify-center text-xl">
+                            AI
+                          </AvatarFallback>
                         )}
                       </Avatar>
-                      <div>
-                        <CardTitle className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">
-                          {getAvatarDescription(generatedAvatar)}
-                        </CardTitle>
-                        <CardDescription className="text-lg mt-1">
-                          AI-generated avatar based on your inputs
-                        </CardDescription>
-                      </div>
                     </div>
-                    <div className="flex space-x-2 flex-wrap">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="sm" className="bg-white/50 hover:bg-white/80">
-                            Load Avatar <ChevronDown className="ml-2 h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent>
-                          <DropdownMenuLabel>Saved Avatars</DropdownMenuLabel>
-                          <DropdownMenuSeparator />
-                          {savedAvatars.map((avatar, index) => (
-                            <TooltipProvider key={index}>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <DropdownMenuItem onClick={() => loadSavedAvatar(avatar, index)}>
-                                    {truncate(avatar.name || `Avatar ${index + 1}`, { length: 20, omission: '...' })}
-                                  </DropdownMenuItem>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <p>{avatar.name || `Avatar ${index + 1}`}</p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                      <Button variant="outline" size="sm" className="bg-white/50 hover:bg-white/80" onClick={saveAvatar}>
-                        <Save className="mr-2 h-4 w-4" />
-                        Save Avatar
-                      </Button>
-                      <Button variant="outline" size="sm" className="bg-white hover:bg-gray-100" onClick={handleDownloadJSON}>
-                        <Download className="mr-2 h-4 w-4" />
-                        Download JSON
-                      </Button>
-                      <Button variant="outline" size="sm" className="bg-white hover:bg-gray-100" onClick={generatePDF}>
-                        <Download className="mr-2 h-4 w-4" />
-                        Download PDF
-                      </Button>
-                      <Button variant="destructive" size="sm" onClick={deleteCurrentAvatar}>
-                        <Trash className="mr-2 h-4 w-4" />
-                        Delete Avatar
-                      </Button>
+                    <div>
+                      <CardTitle className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">
+                        {getAvatarDescription(generatedAvatar)}
+                      </CardTitle>
+                      <CardDescription className="text-lg mt-1">
+                        AI-generated avatar based on your inputs
+                      </CardDescription>
                     </div>
+                  </div>
+                  <div className="flex space-x-2 flex-wrap items-center">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 border-gray-300 dark:border-gray-500">
+                          Load Avatar <ChevronDown className="ml-2 h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                        <DropdownMenuLabel className="text-gray-800 dark:text-white">Saved Avatars</DropdownMenuLabel>
+                        <DropdownMenuSeparator className="bg-gray-200 dark:bg-gray-700" />
+                        {savedAvatars.map((avatar, index) => (
+                          <DropdownMenuItem 
+                            key={index}
+                            onClick={() => loadSavedAvatar(avatar, index)}
+                            className="text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
+                          >
+                            <div className="flex items-center gap-2">
+                              <Avatar className="w-8 h-8">
+                                {avatar.imageUrl ? (
+                                  <div className="w-full h-full rounded-full overflow-hidden">
+                                    <Image 
+                                      src={avatar.imageUrl} 
+                                      alt={getAvatarName(avatar)}
+                                      width={32}
+                                      height={32}
+                                      className="w-full h-full object-cover"
+                                    />
+                                  </div>
+                                ) : (
+                                  <AvatarFallback className="text-xs">
+                                    AI
+                                  </AvatarFallback>
+                                )}
+                              </Avatar>
+                              <span>{truncate(getAvatarName(avatar), { length: 20, omission: '...' })}</span>
+                            </div>
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 border-gray-300 dark:border-gray-500" 
+                      onClick={handleSaveAvatar}
+                    >
+                      <Save className="mr-2 h-4 w-4" />
+                      Save Avatar
+                    </Button>
+                    <Button variant="outline" size="sm" className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 border-gray-300 dark:border-gray-500" onClick={generatePDF}>
+                      <Download className="mr-2 h-4 w-4" />
+                      Download PDF
+                    </Button>
+                    <Button variant="destructive" size="sm" onClick={deleteCurrentAvatar} className="bg-red-500 text-white hover:bg-red-600 dark:bg-red-700 dark:hover:bg-red-800">
+                      <Trash className="mr-2 h-4 w-4" />
+                      Delete Avatar
+                    </Button>
+                    <ThemeToggleButton />
                   </div>
                 </CardHeader>
                 <CardContent className="mt-6">
                   <Tabs defaultValue="personal-details">
                     <div className="-mt-8 mb-8">
-                      <TabsList className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 bg-white/50 p-2 rounded-lg">
+                      <TabsList className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 bg-white/50 dark:bg-gray-800/50 p-2 rounded-lg">
                         {avatarSections.map((section) => (
                           <TabsTrigger
                             key={section.id}
                             value={section.id}
-                            className="px-3 py-1 text-xs sm:text-sm font-medium transition-all data-[state=active]:bg-white data-[state=active]:shadow-sm flex flex-col items-center text-center h-auto"
+                            className="px-3 py-1 text-xs sm:text-sm font-medium transition-all data-[state=active]:bg-white data-[state=active]:text-gray-900 dark:data-[state=active]:bg-gray-700 dark:data-[state=active]:text-white data-[state=active]:shadow-sm flex flex-col items-center text-center h-auto"
                           >
                             <span className="text-lg mb-1">{section.icon}</span>
                             <span className="whitespace-normal">{section.title}</span>
@@ -1204,10 +1729,10 @@ export function AvatarCreatorComponent() {
                         ))}
                       </TabsList>
                     </div>
-                    <div className="mt-16 pt-8 border-t border-gray-200"> {/* Increased top margin and padding */}
+                    <div className="mt-16 pt-8 border-t border-gray-200 dark:border-gray-700">
                       {avatarSections.map((section) => (
                         <TabsContent key={section.id} value={section.id}>
-                          <Card className="bg-white/70 backdrop-blur-sm shadow-lg">
+                          <Card className="bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm shadow-lg">
                             <CardContent className="max-h-[50vh] overflow-y-auto p-4">
                               {renderSectionContent(section.id)}
                             </CardContent>
@@ -1216,14 +1741,13 @@ export function AvatarCreatorComponent() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="bg-white hover:bg-gray-100"
+                                  className="bg-white dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 text-gray-800 dark:text-white"
                                   onClick={() => addWithAI(section.id)}
                                 >
                                   <Plus className="mr-2 h-4 w-4" />
                                   Add with AI
                                 </Button>
                               )}
-                              {/* Remove the Edit Section button */}
                             </CardFooter>
                           </Card>
                         </TabsContent>
@@ -1239,11 +1763,10 @@ export function AvatarCreatorComponent() {
               </Card>
             </motion.div>
           )}
-          {showSnakeGame && (
-            <SnakeGame onClose={() => setShowSnakeGame(false)} />
-          )}
         </>
       ) : null}
+      <SaveDialog />
+      <SaveDialog />
     </div>
   );
 }

@@ -82,7 +82,11 @@ Ensure the generated points are relevant, detailed, and specific to the avatar's
       generatedPoints = JSON.parse(content);
     } catch (jsonError) {
       console.error('Failed to parse JSON:', content);
-      throw new Error(`Failed to parse JSON: ${jsonError.message}`);
+      if (jsonError instanceof Error) {
+        throw new Error(`Failed to parse JSON: ${jsonError.message}`);
+      } else {
+        throw new Error('Failed to parse JSON: Unknown error');
+      }
     }
 
     if (!Array.isArray(generatedPoints)) {
