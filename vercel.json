@@ -1,7 +1,13 @@
 {
   "functions": {
-    "pages/api/**/*.ts": {
-      "maxDuration": 300
+    "app/api/generate/**": {
+      "maxDuration": 120
+    },
+    "app/api/generate-avatar-image/**": {
+      "maxDuration": 120
+    },
+    "app/api/generate-section/**": {
+      "maxDuration": 120
     }
   }
-}
+} 

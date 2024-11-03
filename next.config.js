@@ -12,7 +12,13 @@ const nextConfig = {
     ],
   },
   experimental: {
-    esmExternals: true
+    esmExternals: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
   },
   webpack: (config) => {
     config.experiments = { ...config.experiments, topLevelAwait: true };

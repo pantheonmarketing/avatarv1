@@ -1,6 +1,7 @@
 import { supabase } from './supabaseService';
 import type { UserManagement, BulkUserImport, CreditLog } from '@/types/admin';
 import { debug } from '@/utils/debug';
+import { PostgrestError } from '@supabase/supabase-js';
 
 export async function fetchAllUsers(): Promise<UserManagement[]> {
   const { data, error } = await supabase
@@ -23,44 +24,27 @@ export async function fetchUserCreditLogs(userId: string): Promise<CreditLog[]> 
   return data || [];
 }
 
-export async function updateUserCredits(userId: string, amount: number, isAdd: boolean = true) {
+export async function updateUserCredits(userId: string, amount: number) {
   try {
-    debug.log('Starting credit update:', { userId, amount, isAdd });
-    
-    // Get current credits
-    debug.log('Fetching current user credits...');
-    const { data: user, error: fetchError } = await supabase
+    debug.log('Updating user credits:', { userId, amount });
+
+    // First get current credits
+    const { data: userData, error: fetchError } = await supabase
       .from('users')
-      .select('*') // Select all to get both id and clerk_user_id
+      .select('credits')
       .eq('id', userId)
       .single();
 
     if (fetchError) {
-      debug.error('Error fetching user:', fetchError);
-      throw fetchError;
-    }
-    if (!user) {
-      debug.error('User not found:', userId);
-      throw new Error('User not found');
+      debug.error('Error fetching user credits:', fetchError.message);
+      throw new Error(`Failed to fetch user credits: ${fetchError.message}`);
     }
 
-    debug.log('Current user data:', user);
-
-    // Calculate new amount - FIX: Swap the operation based on isAdd
-    const newCredits = isAdd 
-      ? user.credits + amount  // If isAdd is true, we add
-      : user.credits - amount; // If isAdd is false, we subtract
-
-    // Check for negative balance only when removing credits
-    if (!isAdd && newCredits < 0) {
-      debug.error('Insufficient credits:', { current: user.credits, requested: amount });
-      throw new Error('Insufficient credits');
-    }
-
-    debug.log('Updating credits to:', newCredits);
-
-    // Update credits
-    const { data: updatedUser, error: updateError } = await supabase
+    // Calculate new credits (allow negative adjustments for admin)
+    const newCredits = (userData.credits || 0) + amount;
+    
+    // No need to check for insufficient credits in admin dashboard
+    const { data, error: updateError } = await supabase
       .from('users')
       .update({ credits: newCredits })
       .eq('id', userId)
@@ -68,33 +52,19 @@ export async function updateUserCredits(userId: string, amount: number, isAdd: b
       .single();
 
     if (updateError) {
-      debug.error('Error updating credits:', updateError);
-      throw updateError;
+      debug.error('Error updating credits:', updateError.message);
+      throw new Error(`Failed to update credits: ${updateError.message}`);
     }
 
-    debug.log('Credits updated successfully:', updatedUser);
+    debug.log('Credits updated successfully:', {
+      oldCredits: userData.credits,
+      adjustment: amount,
+      newCredits
+    });
 
-    // Log the transaction - FIX: amount should be positive for add, negative for remove
-    debug.log('Creating credit log entry...');
-    const { error: logError } = await supabase
-      .from('credits_log')
-      .insert({
-        user_id: userId,
-        clerk_user_id: user.clerk_user_id,
-        amount: isAdd ? amount : -amount, // Positive for add, negative for remove
-        action_type: isAdd ? 'admin_add' : 'admin_remove',
-        description: `Admin ${isAdd ? 'added' : 'removed'} ${amount} credits`
-      });
-
-    if (logError) {
-      debug.error('Error creating credit log:', logError);
-      throw logError;
-    }
-
-    debug.log('Credit log created successfully');
-    return updatedUser;
+    return data;
   } catch (error) {
-    debug.error('Failed to update credits:', error);
+    debug.error('Error in updateUserCredits:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -145,14 +115,14 @@ export async function addBulkUsers(emails: string[], defaultCredits: number = 5)
       .select();
 
     if (error) {
-      debug.error('Error inserting bulk users:', error);
+      debug.error('Error inserting bulk users:', error.message || JSON.stringify(error));
       throw error;
     }
 
     debug.log('Successfully added bulk users:', data?.length);
     return data;
   } catch (error) {
-    debug.error('Error adding bulk users:', error);
+    debug.error('Error adding bulk users:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -171,14 +141,14 @@ export async function toggleUserStatus(userId: string, isActive: boolean) {
       .select();
 
     if (error) {
-      debug.error('Error toggling user status:', error);
+      debug.error('Error toggling user status:', error.message || JSON.stringify(error));
       throw error;
     }
 
     debug.log('User status updated:', data);
     return data;
   } catch (error) {
-    debug.error('Error toggling user status:', error);
+    debug.error('Error in toggleUserStatus:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -203,11 +173,14 @@ export async function deleteUser(userId: string) {
       .delete()
       .eq('id', userId);
 
-    if (userError) throw userError;
+    if (userError) {
+      debug.error('Error deleting user:', userError.message || JSON.stringify(userError));
+      throw userError;
+    }
 
     return true;
   } catch (error) {
-    debug.error(error, 'Error deleting user');
+    debug.error('Error in deleteUser:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 } 

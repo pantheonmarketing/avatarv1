@@ -1,10 +1,18 @@
 import { useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PlusCircle, MinusCircle } from 'lucide-react';
+import { Plus, Minus } from 'lucide-react';
 import { debug } from '@/utils/debug';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 interface CreditAdjustmentModalProps {
   onAdjust: (amount: number, isAdd: boolean) => Promise<void>;
@@ -15,24 +23,20 @@ const PRESET_AMOUNTS = [5, 10, 20, 50, 100];
 
 export function CreditAdjustmentModal({ onAdjust, currentCredits }: CreditAdjustmentModalProps) {
   const [amount, setAmount] = useState('');
-  const [isAdd, setIsAdd] = useState(true);
-  const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const [isAdd, setIsAdd] = useState(true);
 
-  const handleSubmit = async () => {
+  const handleAdjust = async () => {
+    if (!amount || isNaN(Number(amount))) return;
+    
+    setIsLoading(true);
     try {
-      setIsLoading(true);
-      debug.log('Submitting credit adjustment:', { amount, isAdd });
-      const numAmount = parseInt(amount);
-      
-      if (numAmount > 0) {
-        await onAdjust(numAmount, !isAdd);
-        setIsOpen(false);
-        setAmount('');
-        setIsAdd(true);
-      }
+      await onAdjust(Number(amount), isAdd);
+      setIsOpen(false);
+      setAmount('');
     } catch (error) {
-      debug.error('Failed to adjust credits:', error);
+      debug.error('Failed to adjust credits:', error instanceof Error ? error.message : String(error));
     } finally {
       setIsLoading(false);
     }
@@ -49,7 +53,7 @@ export function CreditAdjustmentModal({ onAdjust, currentCredits }: CreditAdjust
           Adjust Credits
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Adjust Credits</DialogTitle>
           <DialogDescription>
@@ -65,7 +69,7 @@ export function CreditAdjustmentModal({ onAdjust, currentCredits }: CreditAdjust
               onClick={() => setIsAdd(false)}
               className="flex items-center justify-center gap-2 h-20"
             >
-              <PlusCircle className="h-6 w-6" />
+              <Plus className="h-6 w-6" />
               <div className="flex flex-col items-start">
                 <span className="font-semibold">Add Credits</span>
                 <span className="text-xs opacity-70">Increase balance</span>
@@ -76,7 +80,7 @@ export function CreditAdjustmentModal({ onAdjust, currentCredits }: CreditAdjust
               onClick={() => setIsAdd(true)}
               className="flex items-center justify-center gap-2 h-20"
             >
-              <MinusCircle className="h-6 w-6" />
+              <Minus className="h-6 w-6" />
               <div className="flex flex-col items-start">
                 <span className="font-semibold">Remove Credits</span>
                 <span className="text-xs opacity-70">Decrease balance</span>
@@ -138,7 +142,7 @@ export function CreditAdjustmentModal({ onAdjust, currentCredits }: CreditAdjust
             Cancel
           </Button>
           <Button 
-            onClick={handleSubmit}
+            onClick={handleAdjust}
             disabled={!amount || parseInt(amount) <= 0 || isLoading}
             className={!isAdd ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"}
           >

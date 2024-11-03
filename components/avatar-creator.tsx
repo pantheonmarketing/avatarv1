@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useCallback } from "react"
+import React, { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "./ui/card"
 import { Input } from "./ui/input"
 import { Textarea } from "./ui/textarea"
@@ -229,6 +229,19 @@ const LoadingAnimation = () => (
   </div>
 );
 
+// Add these interfaces at the top of the file, before the component
+interface ParsedContent {
+  headline?: string;
+  points?: string[];
+  [key: string]: any;
+}
+
+interface AvatarContent {
+  headline?: string;
+  points?: string[];
+  [key: string]: any;
+}
+
 export function AvatarCreatorComponent() {
   const [isClient, setIsClient] = useState(false);
 
@@ -258,6 +271,7 @@ export function AvatarCreatorComponent() {
     helpDescription: "",
   });
   const [showLoadingDialog, setShowLoadingDialog] = useState(false);
+  const saveCounter = useRef(0);
 
   // Define the set of sections without the "Add with AI" button
   const sectionsWithoutAddWithAI = new Set(["personal-details", "offer-details"]);
@@ -363,9 +377,12 @@ export function AvatarCreatorComponent() {
           helpDescription: formData.helpDescription.trim(),
           userId: user.id,
         }),
+      }).catch(error => {
+        console.error('Fetch error:', error);
+        throw new Error(`Network error: ${error.message}`);
       });
 
-      if (!response.ok) {
+      if (!response?.ok) {
         let errorMessage = 'Failed to generate avatar';
         try {
           const errorData = await response.json();
@@ -826,12 +843,14 @@ export function AvatarCreatorComponent() {
 
     try {
       setLoading(true);
-      console.log(`Generating new points for section: ${section}`);
       
       const response = await fetch('/api/generate-section', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ section, avatarData: generatedAvatar }),
+        body: JSON.stringify({ 
+          section, 
+          avatarData: generatedAvatar 
+        }),
       });
 
       if (!response.ok) {
@@ -839,27 +858,22 @@ export function AvatarCreatorComponent() {
         throw new Error(errorData.error || 'Failed to generate new points');
       }
 
-      const newPoints = await response.json();
-      console.log('New points generated:', newPoints);
+      const newContent = await response.json();
 
-      // Format new points into HTML
-      let formattedNewPoints = '';
-      if (Array.isArray(newPoints)) {
-        formattedNewPoints = newPoints.map(point => {
-          if (typeof point === 'string') {
-            return `<p>• ${point}</p>`;
-          } else if (point.main) {
-            let html = `<p>• ${point.main}</p>`;
-            if (point.subPoints?.length) {
-              html += point.subPoints.map((sub: string) => `<p>  - ${sub}</p>`).join('');
-            }
-            return html;
-          }
-          return '';
-        }).join('');
-      }
+      // Format the content with headline and points
+      const formattedContent = `<h3>${newContent.headline}</h3>\n${newContent.points
+        .map((point: string) => `• ${point.trim()}`)
+        .join('\n')}`;
 
-      // Update the avatar data without triggering image generation
+      // Update the editor contents
+      setEditorContents(prev => ({
+        ...prev,
+        [section]: prev[section] ? 
+          `${prev[section]}<br><br>${formattedContent}` : 
+          formattedContent
+      }));
+
+      // Update the avatar data
       setGeneratedAvatar((prev) => {
         if (!prev) return prev;
         const property = sectionToPropertyMap[section];
@@ -868,18 +882,10 @@ export function AvatarCreatorComponent() {
         return {
           ...prev,
           [property]: currentContent ? 
-            `${currentContent}<br><br>${formattedNewPoints}` : 
-            formattedNewPoints,
+            `${currentContent}<br><br>${formattedContent}` : 
+            formattedContent,
         };
       });
-
-      // Update editor contents
-      setEditorContents(prev => ({
-        ...prev,
-        [section]: prev[section] ? 
-          `${prev[section]}<br><br>${formattedNewPoints}` : 
-          formattedNewPoints
-      }));
 
       toast.success(`Added new points to ${section}`, { id: toastId });
     } catch (error) {
@@ -898,32 +904,32 @@ export function AvatarCreatorComponent() {
   };
 
   const getAvatarDescription = (avatar: AvatarData | null): string => {
-    if (!avatar) return "Your AI-Generated Avatar";
+    if (!avatar) return 'Unnamed Avatar';
 
-    // Extract name and career from details
-    const details = avatar.details || '';
-    let name = '';
-    let career = '';
-
-    if (typeof details === 'object') {
-      name = details.name || '';
-      career = details.career || details.profession || '';
-    } else if (typeof details === 'string') {
-      // Clean up the string from HTML tags first
-      const cleanDetails = details.replace(/<[^>]*>/g, '');
-      
-      const nameMatch = cleanDetails.match(/Name:\s*([^•\n,]+)/);
-      const careerMatch = cleanDetails.match(/Career:\s*([^•\n,]+)/);
-      
-      name = nameMatch ? nameMatch[1].trim() : '';
-      career = careerMatch ? careerMatch[1].trim() : '';
+    // If details is an object
+    if (typeof avatar.details === 'object' && avatar.details !== null) {
+      return avatar.details.name || 'Unnamed Avatar';
     }
 
-    // Clean up the values
-    name = name.replace(/[^\w\s-]/g, '').trim();
-    career = career.replace(/[^\w\s-]/g, '').trim();
+    // If details is a string
+    if (typeof avatar.details === 'string') {
+      try {
+        const parsed = JSON.parse(avatar.details);
+        if (parsed && typeof parsed === 'object' && parsed.name) {
+          return parsed.name;
+        }
+      } catch {
+        // If not valid JSON, try to extract name using regex
+        const detailsString = avatar.details as string;
+        const nameMatch = detailsString.match(/name:\s*([^,\n]+)/i);
+        if (nameMatch?.[1]) {
+          return nameMatch[1].trim();
+        }
+      }
+    }
 
-    return name && career ? `${name} - ${career}` : 'Unnamed Avatar';
+    // Fallback to avatar name property or default
+    return avatar.name || 'Unnamed Avatar';
   };
 
   // Update the handleSaveAvatar function
@@ -963,7 +969,7 @@ export function AvatarCreatorComponent() {
         }, 'handleSaveAvatar');
         
         if (content) {
-          updatedAvatarData[propertyKey] = content;
+          (updatedAvatarData as any)[propertyKey] = content;
         }
       });
 
@@ -973,15 +979,18 @@ export function AvatarCreatorComponent() {
       }, 'handleSaveAvatar');
 
       let savedAvatar;
+      // Always update if we have an ID, otherwise create new
       if (generatedAvatar.id) {
         debug.log({
           message: 'Updating existing avatar',
           id: generatedAvatar.id
         }, 'handleSaveAvatar');
         savedAvatar = await updateAvatar(generatedAvatar.id, updatedAvatarData);
+        toast.success('Avatar updated successfully!');
       } else {
         debug.log('Creating new avatar', 'handleSaveAvatar');
         savedAvatar = await saveAvatar(user.id, updatedAvatarData);
+        toast.success('Avatar saved successfully!');
       }
 
       setGeneratedAvatar({ ...savedAvatar });
@@ -989,7 +998,6 @@ export function AvatarCreatorComponent() {
         message: 'Avatar saved successfully',
         data: savedAvatar
       }, 'handleSaveAvatar');
-      toast.success('Avatar saved successfully!');
 
       await fetchSavedAvatars();
     } catch (error) {
@@ -1020,81 +1028,41 @@ export function AvatarCreatorComponent() {
         }
       }, 'loadSavedAvatar');
 
-      // Initialize contents for all sections
+      // Helper function to get content from avatar data
+      const getAvatarContent = (propertyKey: string): any => {
+        // Try different possible field names
+        return avatar[propertyKey as keyof AvatarData] || // camelCase
+               avatar[propertyKey.toLowerCase() as keyof AvatarData] || // lowercase
+               avatar[propertyKey.split(/(?=[A-Z])/).join('_').toLowerCase() as keyof AvatarData] || // snake_case
+               avatar.data?.[propertyKey as keyof AvatarData] || // nested in data object
+               null;
+      };
+
+      // Process each section with verification
       const initialContents: Record<string, string> = {};
-      
-      // Helper function to parse and format content
-      const parseContent = (content: string | null | undefined): string => {
-        if (!content) return '';
-
-        try {
-          // Special handling for personal details
-          if (typeof content === 'string' && content.includes('"name":')) {
-            const parsed = JSON.parse(content);
-            return Object.entries(parsed)
-              .filter(([_, value]) => value)
-              .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
-              .join('\n');
-          }
-
-          // Handle other JSON content
-          if (typeof content === 'string' && (content.startsWith('{') || content.startsWith('['))) {
-            const parsed = JSON.parse(content);
-            if (parsed.headline && Array.isArray(parsed.points)) {
-              return `<h3>${parsed.headline}</h3>\n${parsed.points.map((point: string) => `• ${point}`).join('\n')}`;
-            }
-          }
-
-          // If it's already formatted HTML or plain text, return as is
-          return content;
-        } catch (error) {
-          debug.error({
-            message: 'Error parsing content',
-            error,
-            content
-          }, 'parseContent');
-          return content || '';
-        }
-      };
-
-      // Map sections to their database fields
-      const sectionMappings = {
-        'personal-details': avatar.details,
-        'story': avatar.story,
-        'current-wants': avatar.current_wants,
-        'pain-points': avatar.pain_points,
-        'desires': avatar.desires,
-        'offer-results': avatar.offer_results,
-        'biggest-problem': avatar.biggest_problem,
-        'humiliation': avatar.humiliation,
-        'frustrations': avatar.frustrations,
-        'complaints': avatar.complaints,
-        'cost-of-not-buying': avatar.cost_of_not_buying,
-        'biggest-want': avatar.biggest_want
-      };
-
-      // Process each section
-      Object.entries(sectionMappings).forEach(([sectionId, content]) => {
+      Object.entries(sectionToPropertyMap).forEach(([sectionId, propertyKey]) => {
+        const content = getAvatarContent(propertyKey);
+        
         debug.log({
           message: `Processing section ${sectionId}`,
           data: {
-            hasContent: !!content,
-            type: typeof content,
-            rawContent: content
+            propertyKey,
+            foundContent: !!content,
+            contentType: typeof content,
+            possibleKeys: [
+              propertyKey,
+              propertyKey.toLowerCase(),
+              propertyKey.split(/(?=[A-Z])/).join('_').toLowerCase()
+            ]
           }
         }, 'loadSavedAvatar');
 
-        // Parse and format the content
-        const formattedContent = parseContent(content as string);
-        initialContents[sectionId] = formattedContent;
-
-        debug.log({
-          message: `Formatted content for ${sectionId}`,
-          data: {
-            before: content,
-            after: formattedContent
-          }
-        }, 'loadSavedAvatar');
+        if (content) {
+          const parsedContent = parseContent(content);
+          initialContents[sectionId] = parsedContent;
+        } else {
+          debug.warn(`No content found for section: ${sectionId}`, 'loadSavedAvatar');
+        }
       });
 
       // Set all the state
@@ -1107,13 +1075,18 @@ export function AvatarCreatorComponent() {
         helpDescription: avatar.help_description || avatar.helpDescription || ''
       });
 
+      // Log final state for verification
       debug.log({
-        message: 'Final editor contents',
-        data: Object.entries(initialContents).map(([key, value]) => ({
-          section: key,
-          hasContent: !!value,
-          contentPreview: value?.substring(0, 50)
-        }))
+        message: 'Final loaded sections',
+        data: {
+          totalSections: Object.keys(initialContents).length,
+          loadedSections: Object.keys(initialContents),
+          missingSectons: Object.keys(sectionToPropertyMap).filter(
+            section => !initialContents[section]
+          ),
+          rawAvatarData: avatar,
+          processedContents: initialContents
+        }
       }, 'loadSavedAvatar');
 
       setStep(2);
@@ -1256,12 +1229,13 @@ export function AvatarCreatorComponent() {
         name = parsed.name || '';
         career = parsed.career || parsed.profession || '';
       } catch {
-        // If parsing fails, try to extract from string
-        const nameMatch = details.match(/Name:\s*([^•\n,]+)/);
-        const careerMatch = details.match(/Career:\s*([^•\n,]+)/);
+        // If parsing fails, try to extract from string using type assertion
+        const detailsString = details as string;
+        const nameMatch = detailsString.match(/Name:\s*([^•\n,]+)/);
+        const careerMatch = detailsString.match(/Career:\s*([^•\n,]+)/);
         
-        name = nameMatch ? nameMatch[1].trim() : '';
-        career = careerMatch ? careerMatch[1].trim() : '';
+        name = nameMatch?.[1]?.trim() || '';
+        career = careerMatch?.[1]?.trim() || '';
       }
     }
 
@@ -1306,7 +1280,7 @@ export function AvatarCreatorComponent() {
             cost_of_not_buying: generatedAvatar.costOfNotBuying,
             biggest_want: generatedAvatar.biggestWant,
             image_url: avatarImageUrl,
-            image_generation_keywords: generatedAvatar.imageGenerationKeywords,
+            image_generation_keywords: generatedAvatar.imageGenerationKeywords || generatedAvatar.image_generation_keywords
           }
         ])
         .select()
@@ -1366,44 +1340,51 @@ export function AvatarCreatorComponent() {
   const SavedAvatarsDropdown = () => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm">
+        <Button variant="outline" size="sm" className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-800 dark:text-white dark:hover:bg-gray-700 border-gray-300 dark:border-gray-600">
           Load Avatar <ChevronDown className="ml-2 h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-56">
-        <DropdownMenuLabel>Saved Avatars</DropdownMenuLabel>
-        <DropdownMenuSeparator />
+      <DropdownMenuContent className="w-72 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+        <DropdownMenuLabel className="text-gray-800 dark:text-white">Saved Avatars</DropdownMenuLabel>
+        <DropdownMenuSeparator className="bg-gray-200 dark:bg-gray-700" />
         <div className="max-h-[300px] overflow-y-auto">
-          {savedAvatars.map((avatar: AvatarData, index) => (
-            <DropdownMenuItem
+          {savedAvatars.map((avatar, index) => (
+            <DropdownMenuItem 
               key={index}
               onClick={() => loadSavedAvatar(avatar, index)}
-              className="text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="flex items-center gap-2 p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
             >
-              <div className="flex items-center gap-2">
-                <Avatar className="w-8 h-8">
+              <div className="flex items-center gap-3 w-full">
+                <Avatar className="w-8 h-8 flex-shrink-0">
                   {avatar.imageUrl ? (
                     <div className="w-full h-full rounded-full overflow-hidden">
                       <Image 
                         src={avatar.imageUrl} 
-                        alt={getAvatarName(avatar)}
+                        alt={getAvatarDescription(avatar)}
                         width={32}
                         height={32}
                         className="w-full h-full object-cover"
                       />
                     </div>
                   ) : (
-                    <AvatarFallback className="text-xs">
+                    <AvatarFallback className="bg-gray-200 dark:bg-gray-600 text-xs">
                       AI
                     </AvatarFallback>
                   )}
                 </Avatar>
-                <span>{truncate(getAvatarName(avatar), { length: 20, omission: '...' })}</span>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                    {getAvatarInfo(avatar).name}
+                  </span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                    {getAvatarInfo(avatar).career}
+                  </span>
+                </div>
               </div>
             </DropdownMenuItem>
           ))}
           {savedAvatars.length === 0 && (
-            <DropdownMenuItem disabled>
+            <DropdownMenuItem disabled className="text-gray-500 dark:text-gray-400">
               No saved avatars
             </DropdownMenuItem>
           )}
@@ -1416,11 +1397,11 @@ export function AvatarCreatorComponent() {
     <Button
       variant="outline"
       size="sm"
-      onClick={() => setIsSaveDialogOpen(true)}
+      onClick={handleSaveAvatar}
       className="bg-white dark:bg-gray-800"
     >
       <Save className="mr-2 h-4 w-4" />
-      Save Avatar
+      {generatedAvatar?.id ? 'Update Avatar' : 'Save Avatar'}
     </Button>
   );
 
@@ -1453,6 +1434,123 @@ export function AvatarCreatorComponent() {
     }
   }, [user?.id]);
 
+  // Add this function before loadSavedAvatar
+  const parseContent = (content: unknown): string => {
+    if (!content) return '';
+
+    // Handle AvatarDetails object (for personal details section)
+    if (typeof content === 'object' && content !== null && !Array.isArray(content)) {
+      return Object.entries(content as Record<string, unknown>)
+        .filter(([_, value]) => value)
+        .map(([key, value]) => `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`)
+        .join('\n');
+    }
+
+    // Handle string content
+    if (typeof content === 'string') {
+      try {
+        // Try to parse if it's a JSON string
+        if (content.startsWith('{') || content.startsWith('[')) {
+          const parsed = JSON.parse(content) as ParsedContent;
+          if (typeof parsed === 'object' && parsed !== null) {
+            // If it has headline and points structure (main format)
+            if (parsed.headline && Array.isArray(parsed.points)) {
+              return `<h3>${parsed.headline}</h3>\n${parsed.points.map((point: string) => `• ${point}`).join('\n')}`;
+            }
+            // Handle other object formats
+            return Object.entries(parsed)
+              .filter(([_, value]) => value)
+              .map(([key, value]) => {
+                if (key === 'headline') return `<h3>${value}</h3>`;
+                if (key === 'points' && Array.isArray(value)) {
+                  return value.map((point: string) => `• ${point}`).join('\n');
+                }
+                return `• ${key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`;
+              })
+              .join('\n');
+          }
+        }
+        
+        // If content already has HTML formatting, return as is
+        if (content.includes('<h3>') || content.includes('<p>')) {
+          return content;
+        }
+
+        // Format plain text content
+        const lines = content.split('\n').map(line => line.trim()).filter(line => line);
+
+        // Check if first line looks like a headline
+        if (lines[0] && !lines[0].startsWith('•')) {
+          return `<h3>${lines[0]}</h3>\n${lines.slice(1)
+            .map(line => line.startsWith('•') ? line : `• ${line}`)
+            .join('\n')}`;
+        }
+
+        // Otherwise, format as bullet points
+        return lines
+          .map(line => line.startsWith('•') ? line : `• ${line}`)
+          .join('\n');
+
+      } catch (error) {
+        // If parsing fails, try to maintain format with headlines and points
+        const lines = content.split('\n').map(line => line.trim()).filter(line => line);
+        
+        // Check if first line looks like a headline
+        if (lines[0] && !lines[0].startsWith('•')) {
+          return `<h3>${lines[0]}</h3>\n${lines.slice(1)
+            .map(line => line.startsWith('•') ? line : `• ${line}`)
+            .join('\n')}`;
+        }
+        
+        return lines
+          .map(line => line.startsWith('•') ? line : `• ${line}`)
+          .join('\n');
+      }
+    }
+
+    // If content is an array, format it as bullet points
+    if (Array.isArray(content)) {
+      return content.map(item => `• ${String(item)}`).join('\n');
+    }
+
+    return String(content);
+  };
+
+  // Add this function before loadSavedAvatar
+  const getAvatarInfo = (avatar: AvatarData): { name: string; career: string } => {
+    let name = '';
+    let career = '';
+
+    // Handle details object
+    if (typeof avatar.details === 'object' && avatar.details !== null) {
+      name = avatar.details.name || '';
+      career = avatar.details.career || avatar.details.profession || '';
+    } 
+    // Handle string details
+    else if (typeof avatar.details === 'string') {
+      try {
+        const parsed = JSON.parse(avatar.details);
+        if (typeof parsed === 'object' && parsed !== null) {
+          name = parsed.name || '';
+          career = parsed.career || parsed.profession || '';
+        }
+      } catch {
+        // If parsing fails, try to extract using regex
+        const detailsString = avatar.details as string;
+        const nameMatch = detailsString.match(/Name:\s*([^•\n,]+)/);
+        const careerMatch = detailsString.match(/Career:\s*([^•\n,]+)/);
+        
+        name = nameMatch?.[1]?.trim() || '';
+        career = careerMatch?.[1]?.trim() || '';
+      }
+    }
+
+    return {
+      name: name || 'Unnamed Avatar',
+      career: career || 'No career specified'
+    };
+  };
+
   return (
     <div className="container mx-auto p-4 max-w-6xl">
       <Dialog open={showLoadingDialog} onOpenChange={setShowLoadingDialog}>
@@ -1471,7 +1569,7 @@ export function AvatarCreatorComponent() {
             
             <div className="space-y-2 text-gray-600 dark:text-gray-300">
               <p className="animate-[fadeIn_1s_ease-in]">
-                🎨 Creating personality profile...
+                 Creating personality profile...
               </p>
               <p className="animate-[fadeIn_1s_ease-in_0.5s_both]">
                 ✨ Analyzing target audience...
@@ -1539,73 +1637,7 @@ export function AvatarCreatorComponent() {
                     <Button type="button" variant="outline" onClick={fillExampleData} className="text-gray-800 dark:text-white border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">
                       Fill Example
                     </Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-800 dark:text-white dark:hover:bg-gray-700 border-gray-300 dark:border-gray-600">
-                          Load Avatar <ChevronDown className="ml-2 h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                        <DropdownMenuLabel className="text-gray-800 dark:text-white">Saved Avatars</DropdownMenuLabel>
-                        <DropdownMenuSeparator className="bg-gray-200 dark:bg-gray-700" />
-                        <div className="max-h-[300px] overflow-y-auto">
-                          {savedAvatars.map((avatar, index) => (
-                            <DropdownMenuItem 
-                              key={index}
-                              onClick={() => loadSavedAvatar(avatar, index)}
-                              className="flex items-center gap-2 p-2 hover:bg-gray-100 dark:hover:bg-gray-700"
-                            >
-                              <div className="flex items-center gap-2">
-                                <Avatar className="w-8 h-8">
-                                  {avatar.imageUrl ? (
-                                    <div className="w-full h-full rounded-full overflow-hidden">
-                                      <Image 
-                                        src={avatar.imageUrl} 
-                                        alt={getAvatarName(avatar)}
-                                        width={32}
-                                        height={32}
-                                        className="w-full h-full object-cover"
-                                        onError={(e) => {
-                                          console.error('Image failed to load:', e);
-                                          const target = e.target as HTMLImageElement;
-                                          target.src = '/placeholder-avatar.png';
-                                        }}
-                                      />
-                                    </div>
-                                  ) : (
-                                    <AvatarFallback className="bg-gray-200 dark:bg-gray-600 text-xs text-gray-500 dark:text-gray-400">
-                                      AI
-                                    </AvatarFallback>
-                                  )}
-                                </Avatar>
-                                <div className="flex flex-col">
-                                  <span className="text-sm font-medium">{truncate(getAvatarName(avatar), { length: 20, omission: '...' })}</span>
-                                  <span className="text-xs text-gray-500 dark:text-gray-400">
-                                    {(() => {
-                                      // Extract career from details
-                                      if (typeof avatar.details === 'string') {
-                                        const careerMatch = avatar.details.match(/Career:\s*([^,\n]+)/);
-                                        return careerMatch ? truncate(careerMatch[1].trim(), { length: 25 }) : 'No career specified';
-                                      }
-                                      // If details is an object
-                                      if (avatar.details && typeof avatar.details === 'object') {
-                                        return avatar.details.career || avatar.details.profession || 'No career specified';
-                                      }
-                                      return 'No career specified';
-                                    })()}
-                                  </span>
-                                </div>
-                              </div>
-                            </DropdownMenuItem>
-                          ))}
-                          {savedAvatars.length === 0 && (
-                            <DropdownMenuItem disabled className="text-gray-500 dark:text-gray-400">
-                              No saved avatars
-                            </DropdownMenuItem>
-                          )}
-                        </div>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    <SavedAvatarsDropdown />
                   </div>
                 </form>
               </CardContent>
@@ -1654,54 +1686,8 @@ export function AvatarCreatorComponent() {
                     </div>
                   </div>
                   <div className="flex space-x-2 flex-wrap items-center">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 border-gray-300 dark:border-gray-500">
-                          Load Avatar <ChevronDown className="ml-2 h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                        <DropdownMenuLabel className="text-gray-800 dark:text-white">Saved Avatars</DropdownMenuLabel>
-                        <DropdownMenuSeparator className="bg-gray-200 dark:bg-gray-700" />
-                        {savedAvatars.map((avatar, index) => (
-                          <DropdownMenuItem 
-                            key={index}
-                            onClick={() => loadSavedAvatar(avatar, index)}
-                            className="text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700"
-                          >
-                            <div className="flex items-center gap-2">
-                              <Avatar className="w-8 h-8">
-                                {avatar.imageUrl ? (
-                                  <div className="w-full h-full rounded-full overflow-hidden">
-                                    <Image 
-                                      src={avatar.imageUrl} 
-                                      alt={getAvatarName(avatar)}
-                                      width={32}
-                                      height={32}
-                                      className="w-full h-full object-cover"
-                                    />
-                                  </div>
-                                ) : (
-                                  <AvatarFallback className="text-xs">
-                                    AI
-                                  </AvatarFallback>
-                                )}
-                              </Avatar>
-                              <span>{truncate(getAvatarName(avatar), { length: 20, omission: '...' })}</span>
-                            </div>
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 border-gray-300 dark:border-gray-500" 
-                      onClick={handleSaveAvatar}
-                    >
-                      <Save className="mr-2 h-4 w-4" />
-                      Save Avatar
-                    </Button>
+                    <SavedAvatarsDropdown />
+                    <SaveButton />
                     <Button variant="outline" size="sm" className="bg-white text-gray-800 hover:bg-gray-100 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 border-gray-300 dark:border-gray-500" onClick={generatePDF}>
                       <Download className="mr-2 h-4 w-4" />
                       Download PDF

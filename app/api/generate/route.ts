@@ -152,13 +152,12 @@ Important:
     }
 
     content = messageContent.trim();
-    console.log('Raw API response:', content);
-
+    
     // Clean up the response
     content = content
-      .replace(/```json\s*|\s*```/g, '') // Remove code blocks
-      .replace(/^[^{]*/, '') // Remove any text before the first {
-      .replace(/}[^}]*$/, '}'); // Remove any text after the last }
+      .replace(/```json\s*|\s*```/g, '')
+      .replace(/^[^{]*/, '')
+      .replace(/}[^}]*$/, '}');
 
     let avatarData;
     try {
@@ -166,11 +165,7 @@ Important:
     } catch (error) {
       console.error('JSON parsing error:', error);
       console.error('Content attempting to parse:', content);
-      if (error instanceof Error) {
-        throw new Error(`Failed to parse avatar data: ${error.message}`);
-      } else {
-        throw new Error('Failed to parse avatar data');
-      }
+      throw new Error(`Failed to parse avatar data: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 
     // Add metadata

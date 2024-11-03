@@ -1,59 +1,61 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useUser } from '@clerk/nextjs';
-import { fetchUserCreditLogs } from '@/services/adminDashboardService';
-import type { CreditLog } from '@/types/admin';
+import { supabase } from '@/services/supabaseService';
+
+interface CreditLog {
+  id: string;
+  amount: number;
+  action_type: string;
+  description: string;
+  created_at: string;
+}
 
 export function CreditsHistory() {
   const { user } = useUser();
-  const [history, setHistory] = useState<CreditLog[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [creditLogs, setCreditLogs] = useState<CreditLog[]>([]);
 
   useEffect(() => {
-    if (user) {
-      loadHistory();
-    }
+    const fetchCreditHistory = async () => {
+      if (!user?.id) return;
+
+      try {
+        const { data, error } = await supabase
+          .from('credits_log')
+          .select('*')
+          .eq('clerk_user_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        setCreditLogs(data || []);
+      } catch (error) {
+        console.error('Error fetching credit history:', error);
+      }
+    };
+
+    fetchCreditHistory();
   }, [user]);
-
-  async function loadHistory() {
-    try {
-      setLoading(true);
-      const logs = await fetchUserCreditLogs(user!.id);
-      setHistory(logs);
-    } catch (err) {
-      console.error('Error loading credit history:', err);
-      setError('Failed to load credit history');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (loading) return <div>Loading history...</div>;
-  if (error) return <div>Error: {error}</div>;
 
   return (
     <div className="space-y-4">
-      {history.map((log) => (
-        <div 
-          key={log.id}
-          className="p-4 bg-white dark:bg-gray-800 rounded-lg shadow"
-        >
-          <div className="flex justify-between items-center">
-            <div>
-              <p className="font-medium">{log.action_type}</p>
-              <p className="text-sm text-gray-500">{log.description}</p>
-              <p className="text-xs text-gray-400">
-                {new Date(log.created_at).toLocaleString()}
-              </p>
-            </div>
-            <span className={`font-bold ${log.amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {log.amount > 0 ? '+' : ''}{log.amount}
+      <h2 className="text-xl font-bold">Credits History</h2>
+      {creditLogs.map((log) => (
+        <div key={log.id} className="p-4 bg-white rounded shadow">
+          <div className="flex justify-between">
+            <span>{log.description}</span>
+            <span className={log.amount > 0 ? 'text-green-600' : 'text-red-600'}>
+              {log.amount > 0 ? '+' : ''}{log.amount} credits
             </span>
+          </div>
+          <div className="text-sm text-gray-500">
+            {new Date(log.created_at).toLocaleDateString()}
           </div>
         </div>
       ))}
+      {creditLogs.length === 0 && (
+        <div className="text-gray-500 text-center">No credit history available</div>
+      )}
     </div>
   );
 } 

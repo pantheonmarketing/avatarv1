@@ -59,7 +59,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
             toast.error('Your account is pending approval. Please wait for admin authorization.');
           }
         } catch (error) {
-          debug.error('Error in user initialization:', error);
+          debug.error('Error in user initialization:', error instanceof Error ? error.message : String(error));
           toast.error('There was an error setting up your account. Please try again later.');
         } finally {
           setIsChecking(false);

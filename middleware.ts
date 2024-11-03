@@ -1,12 +1,24 @@
 import { authMiddleware } from "@clerk/nextjs";
 
 export default authMiddleware({
-  publicRoutes: ["/", "/api/public(.*)"],
+  publicRoutes: [
+    "/",
+    "/sign-in",
+    "/sign-up",
+    "/api/webhooks(.*)",
+  ],
   ignoredRoutes: [
-    "/api/fetch-image",
-    "/api/generate-avatar-image",
-    "/api/generate"
-  ]
+    "/api/webhooks(.*)",
+    "/_next/static/(.*)",
+    "/favicon.ico",
+  ],
+  afterAuth(auth, req, evt) {
+    if (!auth.userId && !auth.isPublicRoute) {
+      const signInUrl = new URL('/sign-in', req.url);
+      signInUrl.searchParams.set('redirect_url', req.url);
+      return Response.redirect(signInUrl);
+    }
+  },
 });
 
 export const config = {
